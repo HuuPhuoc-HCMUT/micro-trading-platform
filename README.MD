@@ -31,8 +31,6 @@ keyword: CEP, Directly Access Memory
 
 3) Come up with a program structure, data capture? data storage? data cleaning? processing? event processing? signal generation? order generation? order confirmation? real time p/l? accounting?
 
-Install requirement.txt: pip install -r requirement.txt
-
 Here's the complete flow, step by step:
 
 ---
@@ -298,4 +296,46 @@ python main.py
 ## Run tests
 ```bash
 pytest tests/ -v
+```
+
+# Run Commands
+
+## Install dependencies
+```
+pip install -r requirement.txt
+```
+
+## Run simulator (fake price stream)
+```
+python main.py
+```
+
+## Run with real exchange data (Binance, Coinbase, Kraken)
+```
+python main.py --source binance coinbase kraken
+```
+
+## Run with only Binance
+```
+python main.py --source binance
+```
+
+## Run with custom interval (every 5 seconds)
+```
+python main.py --source binance coinbase kraken --interval 5
+```
+
+## Run API server (Phase 1)
+```
+uvicorn api.server:app --reload --port 8000
+```
+
+## Run tests
+```
+pytest tests/ -v
+```
+
+## See all options
+```
+python main.py --help
 ```
