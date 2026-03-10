@@ -31,6 +31,8 @@ keyword: CEP, Directly Access Memory
 
 3) Come up with a program structure, data capture? data storage? data cleaning? processing? event processing? signal generation? order generation? order confirmation? real time p/l? accounting?
 
+Install requirement.txt: pip install -r requirement.txt
+
 Here's the complete flow, step by step:
 
 ---

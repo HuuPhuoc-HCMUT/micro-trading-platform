@@ -1,4 +1,16 @@
+# Data models
 pydantic>=2.0
-fastapi>=0.110.0
-uvicorn>=0.29.0
-kafka-python>=2.0.0
+
+# Web framework + server
+fastapi>=0.110
+uvicorn>=0.30
+
+# Kafka streaming (Phase 2)
+kafka-python>=2.0
+
+# Exchange API clients (Phase 2)
+requests>=2.31
+
+# Testing & linting
+pytest>=8.0
+ruff>=0.5
