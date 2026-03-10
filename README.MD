@@ -257,3 +257,43 @@ But **the logic inside each stage stays exactly the same** — only the transpor
 > **Database** saves the price event, 2 alerts, and the filled order.
 > 
 > **API** can now serve: "You hold 0.1 BTC, entry $42,200, current $42,200, P&L: $0."
+
+
+# How to run the code
+
+## Dependencies (`requirement.txt`)
+
+```
+# Phase 1 — Local prototype
+pydantic>=2.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Phase 2 — Kafka streaming
+kafka-python>=2.0.0
+```
+
+## Install
+```bash
+python -m pip install -r requirement.txt
+```
+
+## Run data stream simulator
+```bash
+python data_simulator/price_stream.py
+```
+
+## Run API server (Phase 1)
+```bash
+uvicorn api.server:app --reload --port 8000
+```
+
+## Run full pipeline
+```bash
+python main.py
+```
+
+## Run tests
+```bash
+pytest tests/ -v
+```
