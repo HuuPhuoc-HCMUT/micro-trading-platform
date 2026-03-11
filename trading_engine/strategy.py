@@ -6,64 +6,106 @@ from trading_engine.order_manager import OrderManager
 
 logger = logging.getLogger(__name__)
 
-
 class RuleBasedStrategy:
-    """Evaluates alerts and executes trading orders based on predefined rules."""
+    """
+    Advanced Strategy using Signal Scoring (Confluence) and Volume Confirmation.
+    """
 
     def __init__(self, order_manager: OrderManager) -> None:
         self.order_manager = order_manager
-        # Default trading quantities for each symbol
-        self.trade_quantities = {
+        # Base trading quantities (Khối lượng vào lệnh cơ bản)
+        self.base_quantities = {
             "BTC/USDT": 0.05,
             "ETH/USDT": 0.5,
             "SOL/USDT": 5.0
         }
 
     def execute(self, alerts: list[Alert], event: PriceEvent) -> None:
-        """Processes a list of alerts and executes orders if conditions are met."""
-        order_executed = False
+        """Evaluates alerts using a scoring system to make a final decision."""
+        if not alerts:
+            return  # No signals, do nothing
 
-        for alert in alerts:
+        symbol = event.symbol
+        
+        # Lọc ra các alerts chỉ thuộc về mã đang xét
+        symbol_alerts = [a for a in alerts if a.symbol == symbol]
+        if not symbol_alerts:
+            return
+
+        # 1. Khởi tạo bộ đếm điểm (Score)
+        signal_score = 0
+        has_volume_anomaly = False
+
+        # 2. Phân tích và chấm điểm từng Alert
+        for alert in symbol_alerts:
             logger.warning(
-                ">>> ALERT [%s] %s | severity=%s | %s",
-                alert.signal_type, alert.symbol, alert.severity, alert.message,
+                ">>> ALERT [%s] %s | %s",
+                alert.signal_type, alert.symbol, alert.message,
             )
 
-            qty = self.trade_quantities.get(event.symbol, 1.0)
-
-            # Strategy 1: Moving Average Crossover
+            # --- Chấm điểm Moving Average ---
             if alert.signal_type == "MA_CROSSOVER":
                 if "Golden cross" in alert.message:
-                    logger.info("STRATEGY: MA Uptrend -> BUY %.4f %s", qty, event.symbol)
-                    self.order_manager.execute_order("BUY", event.symbol, qty, event.price)
-                    order_executed = True
+                    signal_score += 1  # Tín hiệu Tăng (+1)
                 elif "Death cross" in alert.message:
-                    logger.info("STRATEGY: MA Downtrend -> SELL %.4f %s", qty, event.symbol)
-                    self.order_manager.execute_order("SELL", event.symbol, qty, event.price)
-                    order_executed = True
+                    signal_score -= 1  # Tín hiệu Giảm (-1)
 
-            # Strategy 2: Spike Detection
+            # --- Chấm điểm Spike ---
             elif alert.signal_type == "SPIKE_DETECTED":
                 if "spike UP" in alert.message:
-                    logger.info("STRATEGY: Sudden Pump -> BUY %.4f %s", qty, event.symbol)
-                    self.order_manager.execute_order("BUY", event.symbol, qty, event.price)
-                    order_executed = True
+                    signal_score += 1  # Bơm giá (+1)
                 elif "spike DOWN" in alert.message:
-                    logger.info("STRATEGY: Sudden Dump -> SELL %.4f %s", qty, event.symbol)
-                    self.order_manager.execute_order("SELL", event.symbol, qty, event.price)
-                    order_executed = True
+                    signal_score -= 1  # Xả giá (-1)
 
-            # Strategy 3: Volume Anomaly
+            # --- Ghi nhận Volume ---
             elif alert.signal_type == "VOLUME_ANOMALY":
-                logger.info("STRATEGY: High volume detected on %s. Watching closely...", event.symbol)
+                has_volume_anomaly = True
 
-        # Print Portfolio state only if an order was actually attempted
+        # 3. Áp dụng Volume Multiplier (Xác nhận từ dòng tiền)
+        # Nếu có Volume đột biến, nhân đôi sức mạnh của tín hiệu hiện tại
+        if has_volume_anomaly and signal_score != 0:
+            logger.info("🔥 Volume Confirmation! Multiplying signal strength.")
+            signal_score *= 2
+
+        # 4. Quyết định (Decision Making) dựa trên Tổng điểm
+        # Chỉ vào lệnh khi tín hiệu rõ ràng (điểm >= 1 hoặc <= -1)
+        base_qty = self.base_quantities.get(symbol, 1.0)
+        order_executed = False
+
+        if signal_score >= 1:
+            # Điểm dương -> Xu hướng Tăng -> MUA
+            # Có thể thiết kế lượng mua tỉ lệ thuận với điểm số: qty = base_qty * signal_score
+            actual_qty = base_qty * (1 if signal_score == 1 else 1.5) # Mua nhiều hơn chút nếu tín hiệu mạnh
+            
+            logger.info(
+                "🟢 STRATEGY: STRONG BUY SIGNAL (Score: %d) -> BUY %.4f %s", 
+                signal_score, actual_qty, symbol
+            )
+            self.order_manager.execute_order("BUY", symbol, actual_qty, event.price)
+            order_executed = True
+
+        elif signal_score <= -1:
+            # Điểm âm -> Xu hướng Giảm -> BÁN
+            actual_qty = base_qty * (1 if signal_score == -1 else 1.5)
+            
+            logger.info(
+                "🔴 STRATEGY: STRONG SELL SIGNAL (Score: %d) -> SELL %.4f %s", 
+                signal_score, actual_qty, symbol
+            )
+            self.order_manager.execute_order("SELL", symbol, actual_qty, event.price)
+            order_executed = True
+
+        else:
+            # signal_score == 0: Tín hiệu nhiễu, đá nhau hoặc không đủ mạnh
+            logger.info("⚪ STRATEGY: Conflicting or Weak Signals (Score: 0). HOLDING.")
+
+        # 5. Cập nhật sổ sách nếu có giao dịch
         if order_executed:
             summary = self.order_manager.get_portfolio_summary()
             logger.info(
-                "PORTFOLIO: Balance=$%.2f | PnL=$%.2f | Positions=%s",
+                "💰 PORTFOLIO: Balance=$%.2f | PnL=$%.2f | Positions=%s",
                 summary['balance_usdt'],
                 summary['realized_pnl'],
                 summary['positions']
             )
-            print("-" * 60)
+            print("-" * 65)
