@@ -1,23 +1,40 @@
-from data_source.normalizer import fetch_json, normalize
+import json
+import websocket
+from data_source.normalizer import normalize
 from models.price_event import PriceEvent
-
-BASE_URL = "https://api.exchange.coinbase.com"
 
 SYMBOL_MAP = {
     "BTC/USDT": "BTC-USD",
     "ETH/USDT": "ETH-USD",
 }
 
-
-def fetch_ticker(symbol: str = "BTC/USDT") -> PriceEvent:
-    """Fetch latest ticker from Coinbase and return a normalized PriceEvent."""
+def stream_trades(symbol: str = "BTC/USDT"):
     coinbase_symbol = SYMBOL_MAP.get(symbol, symbol.replace("/", "-"))
-    data = fetch_json(f"{BASE_URL}/products/{coinbase_symbol}/ticker")
+    url = "wss://ws-feed.exchange.coinbase.com"
 
-    return normalize({
-        "symbol": symbol,
-        "price": data["price"],
-        "volume": data["volume"],
-        "timestamp": data["time"],
-        "source": "coinbase",
-    })
+    ws = websocket.create_connection(url)
+    
+    # Gửi yêu cầu đăng ký kênh "matches" (trade)
+    subscribe_msg = {
+        "type": "subscribe",
+        "product_ids": [coinbase_symbol],
+        "channels": ["matches"]
+    }
+    ws.send(json.dumps(subscribe_msg))
+
+    try:
+        while True:
+            message = ws.recv()
+            data = json.loads(message)
+            
+            # Chỉ xử lý các message dạng 'match' (khớp lệnh)
+            if data.get("type") == "match":
+                yield normalize({
+                    "symbol": symbol,
+                    "price": data["price"],
+                    "volume": data["size"], # Khối lượng thực của lệnh
+                    "timestamp": data["time"],
+                    "source": "coinbase",
+                })
+    finally:
+        ws.close()

@@ -304,25 +304,61 @@ pytest tests/ -v
 ```
 pip install -r requirement.txt
 ```
+## Run modes (publisher / subscriber / standalone)
 
-## Run simulator (fake price stream)
+The `main.py` script now supports three run modes via `--mode`:
+
+- `publisher`: collect data from the chosen `--source` and publish events over UDP to `127.0.0.1:9999` (use this in Terminal 1).
+- `subscriber`: listen on UDP `127.0.0.1:9999`, run CEP detectors and the strategy (use this in Terminal 2).
+- `standalone`: (single-process) placeholder; prefer running `publisher` and `subscriber` in separate terminals for development and testing.
+
+### Publisher examples (Terminal 1)
+
+Simulated data (default):
 ```
-python main.py
+python main.py --mode publisher --source simulator
 ```
 
-## Run with real exchange data (Binance, Coinbase, Kraken)
+Real exchange (Binance):
 ```
-python main.py --source binance coinbase kraken
-```
-
-## Run with only Binance
-```
-python main.py --source binance
+python main.py --mode publisher --source binance
 ```
 
-## Run with custom interval (every 5 seconds)
+Real exchange (Coinbase):
 ```
-python main.py --source binance coinbase kraken --interval 5
+python main.py --mode publisher --source coinbase
+```
+
+Use `--symbol` and `--interval` to change the trading pair and publish frequency:
+```
+python main.py --mode publisher --source binance --symbol ETH/USDT --interval 2
+```
+
+### Subscriber example (Terminal 2)
+
+Listen for published events and run CEP + strategy:
+```
+python main.py --mode subscriber
+```
+
+### Standalone (single process)
+
+Run publisher+subscriber in a single process (not recommended for development):
+```
+python main.py --mode standalone
+```
+
+### Notes
+
+- Publisher sends UDP packets to `127.0.0.1:9999` by default — ensure this port is available.
+- Open two terminals: run the `publisher` in one and the `subscriber` in the other to simulate decoupled components.
+- Example combined command (publisher in background / separate shell):
+```
+# Terminal 1
+python main.py --mode publisher --source binance
+
+# Terminal 2
+python main.py --mode subscriber
 ```
 
 ## Run API server (Phase 1)

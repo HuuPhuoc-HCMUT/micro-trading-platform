@@ -8,8 +8,9 @@ uvicorn>=0.30
 # Kafka streaming (Phase 2)
 kafka-python>=2.0
 
-# Exchange API clients (Phase 2)
+# Exchange API clients & Real-time streaming
 requests>=2.31
+websocket-client>=1.8.0
 
 # Testing & linting
 pytest>=8.0

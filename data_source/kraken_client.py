@@ -1,29 +1,41 @@
-from data_source.normalizer import fetch_json, normalize
+import json
+import websocket
+from data_source.normalizer import normalize
 from models.price_event import PriceEvent
 
-BASE_URL = "https://api.kraken.com/0/public"
-
 SYMBOL_MAP = {
-    "BTC/USDT": "XBTUSDT",
-    "ETH/USDT": "ETHUSDT",
+    "BTC/USDT": "XBT/USD",
+    "ETH/USDT": "ETH/USD",
 }
 
+def stream_trades(symbol: str = "BTC/USDT"):
+    kraken_symbol = SYMBOL_MAP.get(symbol, symbol.replace("/", "-"))
+    url = "wss://ws.kraken.com"
 
-def fetch_ticker(symbol: str = "BTC/USDT") -> PriceEvent:
-    """Fetch latest ticker from Kraken and return a normalized PriceEvent."""
-    kraken_symbol = SYMBOL_MAP.get(symbol, symbol.replace("/", ""))
-    data = fetch_json(f"{BASE_URL}/Ticker", params={"pair": kraken_symbol})
+    ws = websocket.create_connection(url)
+    
+    subscribe_msg = {
+        "event": "subscribe",
+        "pair": [kraken_symbol],
+        "subscription": {"name": "trade"}
+    }
+    ws.send(json.dumps(subscribe_msg))
 
-    if data.get("error"):
-        raise ValueError(f"Kraken API error: {data['error']}")
-
-    pair_key = next(iter(data["result"]))
-    ticker = data["result"][pair_key]
-
-    return normalize({
-        "symbol": symbol,
-        "price": ticker["c"][0],
-        "volume": ticker["v"][1],
-        "timestamp": None,
-        "source": "kraken",
-    })
+    try:
+        while True:
+            message = ws.recv()
+            data = json.loads(message)
+            
+            # Kraken gửi dữ liệu trade dạng List: [channelID, [[price, volume, time, side, orderType, misc]], channelName, pair]
+            if isinstance(data, list) and len(data) >= 4 and data[2] == "trade":
+                trades = data[1]
+                for trade in trades:
+                    yield normalize({
+                        "symbol": symbol,
+                        "price": trade[0],
+                        "volume": trade[1], # Khối lượng thực của lệnh
+                        "timestamp": float(trade[2]),
+                        "source": "kraken",
+                    })
+    finally:
+        ws.close()
