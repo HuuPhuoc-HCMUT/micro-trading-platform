@@ -101,11 +101,15 @@ class RuleBasedStrategy:
 
         # 5. Cập nhật sổ sách nếu có giao dịch
         if order_executed:
-            summary = self.order_manager.get_portfolio_summary()
+            # Truyền giá thị trường hiện tại vào để tính Unrealized P&L
+            current_prices = {event.symbol: event.price}
+            summary = self.order_manager.get_portfolio_summary(current_prices)
+            
             logger.info(
-                "💰 PORTFOLIO: Balance=$%.2f | PnL=$%.2f | Positions=%s",
+                "💰 PORTFOLIO: Balance=$%.2f | Equity=$%.2f | Realized=$%.2f | Unrealized=$%.2f",
                 summary['balance_usdt'],
+                summary['equity'],
                 summary['realized_pnl'],
-                summary['positions']
+                summary['total_unrealized_pnl']
             )
             print("-" * 65)
