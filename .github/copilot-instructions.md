@@ -24,7 +24,7 @@ Pipeline: `Market Data → Normalizer → CEP Engine → Trading Engine → Outp
 | Linting/Formatting | ruff |
 | Logging | Python `logging` stdlib |
 | Containerization | Docker + docker-compose (phase 2) |
-| Package Manager | pip + requirements.txt |
+| Package Manager | pip + requirement.txt |
 
 ## Architecture & Data Flow
 
@@ -69,7 +69,7 @@ Data Simulator / Exchange Client
 ```
 micro-trading-platform/
 ├── main.py                    # Entry point — runs the pipeline
-├── requirements.txt           # Python dependencies
+├── requirement.txt           # Python dependencies
 ├── api/
 │   └── server.py              # FastAPI app and route definitions
 ├── cep_engine/
@@ -255,13 +255,13 @@ Thresholds should be configurable parameters, not hardcoded.
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirement.txt
 
 # Run local prototype (Phase 1)
 python main.py
 
 # Run API server
-uvicorn api.server:app --reload --port 8000
+uvicorn api.api_server:app --reload --port 8000
 
 # Run tests
 pytest tests/ -v

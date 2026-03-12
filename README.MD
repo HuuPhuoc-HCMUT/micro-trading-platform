@@ -285,7 +285,7 @@ python data_simulator/price_stream.py
 
 ## Run API server (Phase 1)
 ```bash
-uvicorn api.server:app --reload --port 8000
+uvicorn api.api_server:app --reload --port 8000
 ```
 
 ## Run full pipeline

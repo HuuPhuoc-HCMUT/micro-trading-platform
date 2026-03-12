@@ -1,0 +1,18 @@
+services:
+  backend:
+    build: .
+    container_name: micro_trading_backend
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:alpine
+    container_name: micro_trading_frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+    restart: unless-stopped
+    depends_on:
+      - backend
