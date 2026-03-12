@@ -27,6 +27,20 @@ from database.db import init_db, save_candle
 
 from logger_config import setup_logging
 
+# Kafka streaming layer
+import os
+from streaming.kafka_producer import KafkaEventProducer
+from streaming.kafka_consumer import KafkaEventConsumer
+from streaming.topics import PRICE_EVENTS_TOPIC, ALERTS_TOPIC, ORDERS_TOPIC
+from streaming.serializers import (
+    serialize_price_event,
+    deserialize_price_event,
+    serialize_alert,
+    deserialize_alert,
+    serialize_order,
+    deserialize_order,
+)
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -148,6 +162,192 @@ def run_subscriber():
         logger.info("Subscriber stopped. Final Portfolio:")
         print(order_manager.get_portfolio_summary())
 
+# Read broker address from environment so containers can override it.
+KAFKA_BOOTSTRAP_SERVERS: str = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
+
+def run_kafka_publisher(stream) -> None:
+    """Kafka publisher: read from a data stream and publish PriceEvents.
+
+    Aggregates raw ticks into 1-second candles (via :class:`TimeAggregator`)
+    then serialises each closed candle and sends it to the
+    ``market.price_events`` Kafka topic, keyed by symbol.
+
+    Args:
+        stream: An iterable of :class:`PriceEvent` objects (simulator or
+            real exchange client).
+    """
+    aggregator = TimeAggregator(interval_seconds=1.0)
+    candle_count = 0
+
+    logger.info(
+        "🚀 KAFKA PUBLISHER starting — broker=%s topic=%s",
+        KAFKA_BOOTSTRAP_SERVERS, PRICE_EVENTS_TOPIC,
+    )
+
+    with KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        try:
+            for raw_event in stream:
+                aggregated_event = aggregator.process(raw_event)
+                if aggregated_event:
+                    candle_count += 1
+                    logger.info(
+                        "[CANDLE #%d] %s | Close: $%.2f | Vol: %.4f | Ticks: %d",
+                        candle_count,
+                        aggregated_event.symbol,
+                        aggregated_event.price,
+                        aggregated_event.volume,
+                        getattr(aggregated_event, "ticks_count", 0),
+                    )
+                    producer.send(
+                        PRICE_EVENTS_TOPIC,
+                        value=serialize_price_event(aggregated_event),
+                        key=aggregated_event.symbol,
+                    )
+        except KeyboardInterrupt:
+            logger.info("Kafka publisher stopped.")
+
+
+def run_kafka_cep_worker() -> None:
+    """Kafka CEP worker: consume PriceEvents and publish Alerts.
+
+    Subscribes to ``market.price_events``, runs all three CEP detectors
+    (Moving Average, Spike, Volume Anomaly) on each event, then publishes
+    any resulting :class:`Alert` objects to ``market.alerts``.
+    """
+    logger.info(
+        "🔬 KAFKA CEP WORKER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    ma_detector = MovingAverageDetector(short_window=15, long_window=60)
+    spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
+    volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
+
+    consumer = KafkaEventConsumer(
+        topics=[PRICE_EVENTS_TOPIC],
+        group_id="cep-worker",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="latest",
+    )
+
+    with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        for raw in consumer.consume():
+            try:
+                event = deserialize_price_event(raw)
+            except Exception as exc:
+                logger.error("Failed to deserialise PriceEvent: %s", exc)
+                continue
+
+            detectors = [ma_detector, spike_detector, volume_detector]
+            for detector in detectors:
+                try:
+                    alert = detector.process(event)
+                    if alert:
+                        logger.warning(
+                            ">>> ALERT [%s] %s | %s",
+                            alert.signal_type, alert.symbol, alert.message,
+                        )
+                        producer.send(
+                            ALERTS_TOPIC,
+                            value=serialize_alert(alert),
+                            key=alert.symbol,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "CEP detector %s raised an error: %s",
+                        type(detector).__name__, exc,
+                    )
+
+
+def run_kafka_strategy_worker() -> None:
+    """Kafka strategy worker: consume Alerts and publish Orders.
+
+    Subscribes to ``market.alerts``, buffers alerts per symbol within a
+    short accumulation window, then passes them to :class:`RuleBasedStrategy`
+    which may produce paper-trade orders that are saved to the DB and
+    published to ``market.orders``.
+
+    The worker also maintains its own in-memory price cache so the strategy
+    can calculate P&L without an extra round-trip to the database.
+    """
+    logger.info(
+        "📈 KAFKA STRATEGY WORKER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    init_db()
+
+    order_manager = OrderManager(initial_balance=10000.0)
+    strategy = RuleBasedStrategy(order_manager)
+
+    # Price cache: symbol → latest price (for unrealised P&L)
+    price_cache: dict[str, float] = {}
+
+    # Alert accumulation buffer: symbol → list of Alerts received this cycle
+    alert_buffer: dict[str, list] = {}
+
+    consumer = KafkaEventConsumer(
+        topics=[ALERTS_TOPIC],
+        group_id="strategy-worker",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="latest",
+    )
+
+    with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        for raw in consumer.consume():
+            try:
+                alert = deserialize_alert(raw)
+            except Exception as exc:
+                logger.error("Failed to deserialise Alert: %s", exc)
+                continue
+
+            symbol = alert.symbol
+            alert_buffer.setdefault(symbol, []).append(alert)
+
+            # Build a synthetic PriceEvent from the alert's trigger price
+            # (extracted from the message when available, otherwise cached).
+            # The strategy only needs event.symbol and event.price.
+            cached_price = price_cache.get(symbol, 0.0)
+
+            # Try to parse price from alert message ("... @ $42000.00")
+            try:
+                import re
+                match = re.search(r"\$([0-9]+(?:\.[0-9]+)?)", alert.message)
+                if match:
+                    cached_price = float(match.group(1))
+                    price_cache[symbol] = cached_price
+            except Exception:
+                pass
+
+            if cached_price == 0.0:
+                # Not enough info yet — wait for a price-bearing alert
+                continue
+
+            from models.price_event import PriceEvent as _PE
+            synthetic_event = _PE(
+                symbol=symbol,
+                price=cached_price,
+                volume=0.0,
+                timestamp=alert.triggered_at,
+                source="kafka-strategy",
+            )
+
+            # Run strategy with accumulated alerts for this symbol
+            pending_alerts = alert_buffer.pop(symbol, [])
+            strategy.execute(pending_alerts, synthetic_event)
+
+            # Publish the latest filled order (if any) to market.orders
+            if order_manager.order_history:
+                latest_order = order_manager.order_history[-1]
+                if latest_order.status == "FILLED":
+                    producer.send(
+                        ORDERS_TOPIC,
+                        value=serialize_order(latest_order),
+                        key=symbol,
+                    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Micro Trading Platform")
     
@@ -155,9 +355,15 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["publisher", "subscriber", "standalone"],
+        choices=[
+            "publisher", "subscriber", "standalone",
+            "kafka-publisher", "kafka-cep", "kafka-strategy",
+        ],
         default="standalone",
-        help="Chế độ chạy: publisher (Terminal 1), subscriber (Terminal 2), hoặc standalone",
+        help=(
+            "Run mode: publisher/subscriber (UDP, Phase 1) | "
+            "kafka-publisher / kafka-cep / kafka-strategy (Kafka, Phase 2)"
+        ),
     )
     
     # 2. Cấu hình SOURCE (Nguồn dữ liệu - Chỉ nhận 1 giá trị)
@@ -178,6 +384,14 @@ def main() -> None:
         run_subscriber()
         return
 
+    if args.mode == "kafka-cep":
+        run_kafka_cep_worker()
+        return
+
+    if args.mode == "kafka-strategy":
+        run_kafka_strategy_worker()
+        return
+
     # Khởi tạo Data Stream (dùng cho Publisher)
     if args.source == "simulator":
         stream = generate_price_stream(
@@ -189,6 +403,8 @@ def main() -> None:
 
     if args.mode == "publisher":
         run_publisher(stream)
+    elif args.mode == "kafka-publisher":
+        run_kafka_publisher(stream)
     else:
         # Chế độ Standalone
         logger.info("Chạy chế độ STANDALONE (Chưa hỗ trợ gộp trong bản update này, vui lòng dùng terminal riêng)")
