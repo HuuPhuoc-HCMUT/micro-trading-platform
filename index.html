@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Micro Trading Dashboard</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+      body {
+        background-color: #121212;
+        color: #ffffff;
+      }
+      .card {
+        background-color: #1e1e1e;
+        border: 1px solid #333;
+        color: #ffffff; /* THÊM DÒNG NÀY ĐỂ ÉP CHỮ TRONG CARD THÀNH MÀU TRẮNG */
+      }
+      /* FIX CHỮ TỐI: Ghi đè màu text-muted của Bootstrap cho sáng hơn */
+      .text-muted {
+        color: #a0a0a0 !important;
+      }
+
+      .text-success {
+        color: #00ff88 !important;
+      }
+      .text-danger {
+        color: #ff3366 !important;
+      }
+      .table {
+        color: #fff;
+      }
+      .table-dark th {
+        background-color: #2a2a2a;
+        border-color: #444;
+      }
+      .table td,
+      .table th {
+        border-color: #333;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container mt-4">
+      <h2 class="mb-4">🚀 Micro Trading Dashboard</h2>
+
+      <div class="row mb-4">
+        <div class="col-md-6">
+          <div class="card p-3 shadow-sm">
+            <h5 class="card-title text-muted">Số dư khả dụng (USDT)</h5>
+            <h2 id="balance" class="mb-0">Đang tải...</h2>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="card p-3 shadow-sm">
+            <h5 class="card-title text-muted">
+              Lợi nhuận đã chốt (Realized PnL)
+            </h5>
+            <h2 id="pnl" class="mb-0">Đang tải...</h2>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-3 shadow-sm mb-4">
+        <h5 class="card-title text-muted mb-3">
+          Biểu đồ Giá Real-time (BTC/USDT)
+        </h5>
+        <div id="tvchart" style="width: 100%; height: 400px"></div>
+      </div>
+
+      <div class="card p-3 shadow-sm mb-5">
+        <h5 class="card-title text-muted mb-3">
+          Lịch sử Đặt lệnh (Order History)
+        </h5>
+        <div class="table-responsive">
+          <table class="table table-dark table-hover text-center align-middle">
+            <thead>
+              <tr>
+                <th>Mã (ID)</th>
+                <th>Thời gian</th>
+                <th>Cặp giao dịch</th>
+                <th>Loại lệnh</th>
+                <th>Giá khớp</th>
+                <th>Khối lượng</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="order-table-body">
+              <tr>
+                <td colspan="7">Đang chờ dữ liệu từ Bot...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE_URL = "http://localhost:8000/api";
+
+      // ==========================================
+      // KHỞI TẠO BIỂU ĐỒ TRADINGVIEW
+      // ==========================================
+      const chart = LightweightCharts.createChart(
+        document.getElementById("tvchart"),
+        {
+          layout: {
+            background: { type: "solid", color: "#1e1e1e" }, // Khớp với màu thẻ card
+            textColor: "#d1d4dc",
+          },
+          grid: {
+            vertLines: { color: "#333" },
+            horzLines: { color: "#333" },
+          },
+          crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: true,
+          },
+        },
+      );
+
+      // Cấu hình màu sắc cho Nến Nhật
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#00ff88",
+        downColor: "#ff3366",
+        borderVisible: false,
+        wickUpColor: "#00ff88",
+        wickDownColor: "#ff3366",
+      });
+
+      // Hàm gọi API lấy dữ liệu nến
+      async function updateChart() {
+        try {
+          const res = await fetch(`${API_BASE_URL}/candles`);
+          const data = await res.json();
+
+          // Cập nhật nến lên biểu đồ nếu có dữ liệu
+          if (data && data.length > 0) {
+            candleSeries.setData(data);
+          }
+        } catch (error) {
+          console.error("Lỗi tải nến:", error);
+        }
+      }
+
+      // ==========================================
+      // VẼ MŨI TÊN BUY/SELL LÊN BIỂU ĐỒ (MARKERS)
+      // ==========================================
+      async function updateMarkers() {
+        try {
+          // Lấy 100 lệnh gần nhất để vẽ lên biểu đồ
+          const res = await fetch(`${API_BASE_URL}/orders?limit=100`);
+          if (!res.ok) return;
+          const orders = await res.json();
+
+          if (!orders || orders.length === 0) return;
+
+          // 1. BẮT BUỘC: Sắp xếp lệnh theo thời gian Cũ -> Mới (Tăng dần)
+          orders.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+          const markers = [];
+          let lastTime = 0;
+
+          orders.forEach((order) => {
+            // Chỉ vẽ những lệnh đã khớp thành công
+            if (order.status !== "FILLED") return;
+
+            // Chuyển đổi thời gian sang Unix Timestamp (giây)
+            const timeInSeconds = Math.floor(new Date(order.timestamp).getTime() / 1000);
+
+            // Bỏ qua nếu có 2 lệnh khớp trong cùng 1 giây (Tránh lỗi đè marker của TradingView)
+            if (timeInSeconds === lastTime) return;
+            lastTime = timeInSeconds;
+
+            // Cấu hình mũi tên
+            if (order.side === "BUY") {
+              markers.push({
+                time: timeInSeconds,
+                position: "belowBar", // Nằm dưới cây nến
+                color: "#00ff88",
+                shape: "arrowUp",     // Mũi tên chĩa lên
+                text: "BUY",
+              });
+            } else if (order.side === "SELL") {
+              markers.push({
+                time: timeInSeconds,
+                position: "aboveBar", // Nằm trên cây nến
+                color: "#ff3366",
+                shape: "arrowDown",   // Mũi tên chĩa xuống
+                text: "SELL",
+              });
+            }
+          });
+
+          // 2. Gắn mảng mũi tên này vào chuỗi nến hiện tại
+          candleSeries.setMarkers(markers);
+        } catch (error) {
+          console.error("Lỗi vẽ Markers mũi tên:", error);
+        }
+      }
+
+      // ==========================================
+      // CẬP NHẬT THÔNG SỐ VÍ VÀ LỊCH SỬ LỆNH
+      // ==========================================
+      async function fetchDashboardData() {
+        try {
+          // 1. Gọi API lấy thông tin ví
+          const portRes = await fetch(`${API_BASE_URL}/portfolio`);
+          const portData = await portRes.json();
+
+          // Cập nhật lên UI (Format tiền tệ)
+          document.getElementById("balance").innerText =
+            "$" +
+            portData.balance_usdt.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+
+          const pnlElement = document.getElementById("pnl");
+          const pnlValue = portData.realized_pnl;
+          pnlElement.innerText =
+            "$" +
+            pnlValue.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+          pnlElement.className =
+            pnlValue >= 0 ? "text-success mb-0" : "text-danger mb-0";
+
+          // 2. Gọi API lấy lịch sử lệnh
+          const ordRes = await fetch(`${API_BASE_URL}/orders?limit=15`);
+          const orders = await ordRes.json();
+
+          const tbody = document.getElementById("order-table-body");
+          tbody.innerHTML = ""; // Xóa dòng chờ dữ liệu
+
+          if (orders.length === 0) {
+            tbody.innerHTML =
+              '<tr><td colspan="7">Chưa có giao dịch nào</td></tr>';
+            return;
+          }
+
+          orders.forEach((order) => {
+            const sideColor =
+              order.side === "BUY" ? "text-success" : "text-danger";
+            const timeString = new Date(order.timestamp).toLocaleTimeString();
+
+            const row = `
+                        <tr>
+                            <td>#${order.id}</td>
+                            <td>${timeString}</td>
+                            <td><strong>${order.symbol}</strong></td>
+                            <td class="${sideColor}"><strong>${order.side}</strong></td>
+                            <td>$${order.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            <td>${order.quantity}</td>
+                            <td><span class="badge bg-secondary">${order.status}</span></td>
+                        </tr>
+                    `;
+            tbody.innerHTML += row;
+          });
+        } catch (error) {
+          console.error("Lỗi mất kết nối Backend:", error);
+        }
+      }
+
+      // ==========================================
+      // VÒNG LẶP CHẠY REAL-TIME
+      // ==========================================
+
+      // Gọi lần đầu để có dữ liệu ngay lập tức
+      fetchDashboardData();
+      updateChart();
+      updateMarkers(); // <-- Lần chạy đầu tiên
+
+      // Quét API liên tục mỗi 1 giây
+      setInterval(() => {
+        fetchDashboardData();
+        updateChart();
+        updateMarkers(); // <-- Quét mũi tên liên tục mỗi giây
+      }, 1000);
+
+      // Đảm bảo biểu đồ tự resize khi thu phóng cửa sổ trình duyệt
+      window.addEventListener("resize", () => {
+        chart.applyOptions({
+          width: document.getElementById("tvchart").clientWidth,
+        });
+      });
+    </script>
+  </body>
+</html>

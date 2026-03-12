@@ -21,6 +21,9 @@ from models.price_event import PriceEvent
 from data_source.binance_client import stream_trades as binance_stream
 from data_source.coinbase_client import stream_trades as coinbase_stream
 from data_source.kraken_client import stream_trades as kraken_stream
+from data_source.time_aggregator import TimeAggregator # <--- THÊM DÒNG NÀY Ở ĐẦU FILE
+
+from database.db import init_db, save_candle
 
 from logger_config import setup_logging
 
@@ -66,20 +69,37 @@ def deserialize_event(data_bytes: bytes) -> PriceEvent:
     return PriceEvent(**data)
 
 def run_publisher(stream):
-    """TERMINAL 1: Chỉ lấy Data và bắn qua mạng (Cổng 9999)"""
+    """TERMINAL 1: Lấy Data, GOM NẾN (Aggregator), rồi mới bắn qua mạng"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    tick_count = 0
-    logger.info(f"🚀 PUBLISHER is running. Sending data to UDP {UDP_IP}:{UDP_PORT}")
+    
+    # Khởi tạo bộ gom nến 1 giây
+    aggregator = TimeAggregator(interval_seconds=1.0) 
+    
+    candle_count = 0
+    logger.info(f"🚀 PUBLISHER is running. Aggregating to 1s candles -> UDP {UDP_IP}:{UDP_PORT}")
     
     try:
-        for event in stream:
-            tick_count += 1
-            logger.info(
-                "[PUBLISHER TICK #%d] %s price=%.2f vol=%.4f src=%s",
-                tick_count, event.symbol, event.price, event.volume, getattr(event, "source", "simulator")
-            )
-            # Gửi data đi
-            sock.sendto(serialize_event(event), (UDP_IP, UDP_PORT))
+        for raw_event in stream:
+            # 1. Ném tick thô vào Aggregator
+            aggregated_event = aggregator.process(raw_event)
+            
+            # 2. Chỉ khi nào nến đóng (trả về event) thì mới in log và gửi đi
+            if aggregated_event:
+                candle_count += 1
+                
+                # In ra log siêu đẹp để bạn thấy nó đã gom bao nhiêu lệnh
+                logger.info(
+                    "[CANDLE #%d] %s | Close: $%.2f | Vol: %.4f | Ticks gom: %d",
+                    candle_count, 
+                    aggregated_event.symbol, 
+                    aggregated_event.price, 
+                    aggregated_event.volume,
+                    getattr(aggregated_event, "ticks_count", 0)
+                )
+                
+                # 3. Gửi nến đã gom qua cho Terminal 2 (Subscriber)
+                sock.sendto(serialize_event(aggregated_event), (UDP_IP, UDP_PORT))
+                
     except KeyboardInterrupt:
         logger.info("Publisher stopped.")
 
@@ -90,8 +110,10 @@ def run_subscriber():
     
     logger.info(f"🎧 SUBSCRIBER is listening on UDP {UDP_IP}:{UDP_PORT}...")
     
+    init_db()
+
     # 1. Khởi tạo CEP Engine (Cả 3 bộ lọc)
-    ma_detector = MovingAverageDetector(short_window=500, long_window=2000)
+    ma_detector = MovingAverageDetector(short_window=15, long_window=60)
     spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
     volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
 
@@ -104,6 +126,8 @@ def run_subscriber():
             # Nhận data từ Publisher
             data, addr = sock.recvfrom(4096)
             event = deserialize_event(data)
+
+            save_candle(event)
             
             # Quét qua các máy dò tín hiệu
             alerts = []

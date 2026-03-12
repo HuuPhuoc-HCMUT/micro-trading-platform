@@ -348,6 +348,11 @@ Run publisher+subscriber in a single process (not recommended for development):
 python main.py --mode standalone
 ```
 
+### Open 2 processes
+```
+python run_bot.py
+```
+
 ### Notes
 
 - Publisher sends UDP packets to `127.0.0.1:9999` by default — ensure this port is available.
@@ -361,9 +366,9 @@ python main.py --mode publisher --source binance
 python main.py --mode subscriber
 ```
 
-## Run API server (Phase 1)
+## Run API server (Phase 1) then 👉 http://localhost:8000/docs
 ```
-uvicorn api.server:app --reload --port 8000
+uvicorn api.api_server:app --reload --port 8000
 ```
 
 ## Run tests

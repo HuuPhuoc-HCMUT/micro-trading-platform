@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from models.order import Order
+from database.db import save_order, save_balance
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,14 @@ class OrderManager:
                     quantity, position.quantity
                 )
 
+        # 1. Lưu lệnh vừa đặt vào DB (dù khớp hay bị từ chối)
+        save_order(order)
+        
+        # 2. Nếu lệnh khớp thành công làm thay đổi số dư, lưu cập nhật số dư mới
+        if order.status == "FILLED":
+            save_balance(self.balance, self.realized_pnl)
+        # -----------------------------
+        
         self.order_history.append(order)
         return order
 
