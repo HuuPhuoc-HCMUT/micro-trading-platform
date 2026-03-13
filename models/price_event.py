@@ -1,5 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel
+from __future__ import annotations
 
 class PriceEvent(BaseModel):
     symbol: str

@@ -380,3 +380,15 @@ pytest tests/ -v
 ```
 python main.py --help
 ```
+
+# 1. Start infrastructure
+docker compose up zookeeper kafka kafka-ui -d
+
+# 2. Terminal 1 — publish candles to Kafka
+python main.py --mode kafka-publisher --source binance --symbol BTC/USDT
+
+# 3. Terminal 2 — CEP detector worker
+python main.py --mode kafka-cep
+
+# 4. Terminal 3 — strategy + order execution worker
+python main.py --mode kafka-strategy

@@ -20,6 +20,8 @@ Usage::
         producer.send(PRICE_EVENTS_TOPIC, key=event.symbol, value=raw)
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional
 
