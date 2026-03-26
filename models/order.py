@@ -8,3 +8,4 @@ class Order(BaseModel):
     price: float       
     status: str        # "PENDING", "FILLED", or "REJECTED"
     timestamp: datetime
+    trade_pnl: float | None = None

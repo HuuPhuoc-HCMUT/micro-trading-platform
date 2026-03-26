@@ -1,13 +1,14 @@
 import json
 import websocket
 from data_source.normalizer import normalize
-from models.price_event import PriceEvent
 
-# Thêm stream_trades thay thế fetch_ticker
+def _to_binance_symbol(symbol: str) -> str:
+    return symbol.replace("/", "").lower()
+
+
 def stream_trades(symbol: str = "BTC/USDT"):
     """Mở WebSocket tới Binance và yield từng sự kiện khớp lệnh (Trade)."""
-    # Binance websocket yêu cầu symbol viết thường (vd: btcusdt)
-    binance_symbol = symbol.replace("/", "").lower()
+    binance_symbol = _to_binance_symbol(symbol)
     url = f"wss://stream.binance.com:9443/ws/{binance_symbol}@trade"
 
     # Tạo kết nối WebSocket
@@ -24,6 +25,34 @@ def stream_trades(symbol: str = "BTC/USDT"):
                 "price": data["p"],
                 "volume": data["q"], 
                 "timestamp": data["T"],
+                "source": "binance",
+            })
+    finally:
+        ws.close()
+
+
+def iter_binance_trades(symbols: list[str]):
+    """Open a multiplex Binance stream and yield normalized trade events."""
+    if not symbols:
+        return
+
+    stream_path = "/".join(f"{_to_binance_symbol(symbol)}@trade" for symbol in symbols)
+    url = f"wss://stream.binance.com:9443/stream?streams={stream_path}"
+    symbol_map = {_to_binance_symbol(symbol): symbol for symbol in symbols}
+    ws = websocket.create_connection(url)
+
+    try:
+        while True:
+            message = ws.recv()
+            data = json.loads(message)
+            payload = data.get("data", data)
+            stream_name = str(data.get("stream", "")).split("@", 1)[0]
+            symbol = symbol_map.get(stream_name, payload.get("s", "UNKNOWN"))
+            yield normalize({
+                "symbol": symbol,
+                "price": payload["p"],
+                "volume": payload["q"],
+                "timestamp": payload["T"],
                 "source": "binance",
             })
     finally:

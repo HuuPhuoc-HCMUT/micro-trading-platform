@@ -9,6 +9,7 @@ from models.price_event import PriceEvent
 def generate_price_stream(
     symbols_start_prices: dict[str, float] | None = None,
     interval: float = 0.2,
+    copy_prices: bool = True,
 ) -> Iterator[PriceEvent]:
     """Generate an infinite stream of simulated price events for multiple symbols."""
     
@@ -20,7 +21,7 @@ def generate_price_stream(
             "SOL/USDT": 100.0
         }
 
-    current_prices = symbols_start_prices.copy()
+    current_prices = symbols_start_prices.copy() if copy_prices else symbols_start_prices
 
     while True:
         # Randomly select ONE symbol to update in this tick (simulating asynchronous data)

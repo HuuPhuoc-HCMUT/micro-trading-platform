@@ -15,3 +15,6 @@ websocket-client>=1.8.0
 # Testing & linting
 pytest>=8.0
 ruff>=0.5
+
+# Interactive terminal UI
+textual>=0.61

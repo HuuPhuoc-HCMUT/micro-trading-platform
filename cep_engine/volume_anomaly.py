@@ -1,5 +1,7 @@
 import logging
+import math
 from datetime import datetime, timezone
+from statistics import pstdev
 
 from models.alert import Alert
 from models.price_event import PriceEvent
@@ -26,6 +28,8 @@ class VolumeAnomalyDetector:
 
         if len(previous_volumes) == self.window_size:
             avg_volume = sum(previous_volumes) / self.window_size
+            volume_std = pstdev(previous_volumes) if len(previous_volumes) > 1 else 0.0
+            zscore = (event.volume - avg_volume) / volume_std if volume_std > 1e-9 else 0.0
             
             # LOGIC MỚI: Phải thỏa mãn hệ số nhân VÀ phải lớn hơn min_volume
             if avg_volume > 0 and event.volume >= (avg_volume * self.multiplier) and event.volume >= self.min_volume:
@@ -40,6 +44,13 @@ class VolumeAnomalyDetector:
                         f"{event.volume / avg_volume:.1f}x the average ({avg_volume:.4f})"
                     ),
                     triggered_at=datetime.now(timezone.utc),
+                    confidence=min(0.98, 0.5 + min(event.volume / avg_volume, 6.0) / 12.0),
+                    score=math.tanh((event.volume / avg_volume) - 1.0),
+                    metadata={
+                        "avg_volume": round(avg_volume, 6),
+                        "volume_ratio": round(event.volume / avg_volume, 6),
+                        "volume_zscore": round(zscore, 6),
+                    },
                 )
                 
                 self.history[symbol].append(event.volume)

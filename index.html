@@ -4,286 +4,797 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Micro Trading Dashboard</title>
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
-      body {
-        background-color: #121212;
-        color: #ffffff;
-      }
-      .card {
-        background-color: #1e1e1e;
-        border: 1px solid #333;
-        color: #ffffff; /* THÊM DÒNG NÀY ĐỂ ÉP CHỮ TRONG CARD THÀNH MÀU TRẮNG */
-      }
-      /* FIX CHỮ TỐI: Ghi đè màu text-muted của Bootstrap cho sáng hơn */
-      .text-muted {
-        color: #a0a0a0 !important;
+      :root {
+        --bg: #0b1220;
+        --panel: rgba(15, 23, 42, 0.9);
+        --panel-border: rgba(148, 163, 184, 0.18);
+        --text: #e5eefb;
+        --muted: #97a6ba;
+        --accent: #38bdf8;
+        --accent-2: #22c55e;
+        --danger: #f43f5e;
+        --warning: #f59e0b;
+        --shadow: 0 18px 60px rgba(2, 6, 23, 0.35);
       }
 
-      .text-success {
-        color: #00ff88 !important;
+      * {
+        box-sizing: border-box;
       }
-      .text-danger {
-        color: #ff3366 !important;
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 28%),
+          radial-gradient(circle at top right, rgba(34, 197, 94, 0.12), transparent 24%),
+          linear-gradient(180deg, #09111f 0%, #0b1220 42%, #111827 100%);
       }
-      .table {
-        color: #fff;
+
+      .shell {
+        width: min(1280px, calc(100% - 32px));
+        margin: 24px auto 40px;
       }
-      .table-dark th {
-        background-color: #2a2a2a;
-        border-color: #444;
+
+      .hero {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: 1.4fr 0.8fr;
+        margin-bottom: 20px;
       }
-      .table td,
-      .table th {
-        border-color: #333;
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero-card {
+        padding: 28px;
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 10px 0 12px;
+        font-size: clamp(28px, 4vw, 44px);
+        line-height: 1.05;
+      }
+
+      .hero-copy {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+        max-width: 64ch;
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      .pill {
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.08);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .stats {
+        display: grid;
+        gap: 14px;
+      }
+
+      .stat-card {
+        padding: 20px 22px;
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+
+      .stat-value {
+        font-size: clamp(24px, 3vw, 34px);
+        font-weight: 700;
+      }
+
+      .stat-sub {
+        color: var(--muted);
+        margin-top: 8px;
+        font-size: 13px;
+      }
+
+      .positive {
+        color: var(--accent-2);
+      }
+
+      .negative {
+        color: var(--danger);
+      }
+
+      .neutral {
+        color: var(--text);
+      }
+
+      .content-grid {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.95fr);
+      }
+
+      .section {
+        padding: 22px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .section-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .symbol-select {
+        min-width: 180px;
+        padding: 10px 14px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.95);
+        color: var(--text);
+        outline: none;
+      }
+
+      .section-title {
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .section-note {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      #tvchart {
+        width: 100%;
+        height: 420px;
+        border-radius: 18px;
+        overflow: hidden;
+      }
+
+      .symbol-grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .symbol-card {
+        width: 100%;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(15, 23, 42, 0.7);
+        cursor: pointer;
+        transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        text-align: left;
+        color: var(--text);
+      }
+
+      .symbol-card:hover,
+      .symbol-card.active {
+        transform: translateY(-1px);
+        border-color: rgba(56, 189, 248, 0.5);
+        background: rgba(14, 30, 55, 0.92);
+      }
+
+      .symbol-top,
+      .symbol-bottom {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .symbol-name {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .symbol-source,
+      .symbol-extra {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .list-block {
+        display: grid;
+        gap: 12px;
+      }
+
+      .list-item {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(148, 163, 184, 0.06);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      .detail-grid {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .metric-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .mini-stat {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(148, 163, 184, 0.06);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+      }
+
+      .mini-stat-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .mini-stat-value {
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 14px 12px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+        white-space: nowrap;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .badge-buy {
+        color: #052e16;
+        background: rgba(74, 222, 128, 0.92);
+      }
+
+      .badge-sell {
+        color: #fff1f2;
+        background: rgba(244, 63, 94, 0.92);
+      }
+
+      .badge-hold {
+        color: #fef3c7;
+        background: rgba(245, 158, 11, 0.2);
+        border: 1px solid rgba(245, 158, 11, 0.28);
+      }
+
+      .empty {
+        color: var(--muted);
+        text-align: center;
+        padding: 22px 12px;
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .content-grid,
+        .detail-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .shell {
+          width: min(100% - 20px, 1280px);
+          margin-top: 14px;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="container mt-4">
-      <h2 class="mb-4">🚀 Micro Trading Dashboard</h2>
-
-      <div class="row mb-4">
-        <div class="col-md-6">
-          <div class="card p-3 shadow-sm">
-            <h5 class="card-title text-muted">Số dư khả dụng (USDT)</h5>
-            <h2 id="balance" class="mb-0">Đang tải...</h2>
+    <main class="shell">
+      <section class="hero">
+        <article class="panel hero-card">
+          <div class="eyebrow">Realtime Trading Monitor</div>
+          <h1>Micro Trading Dashboard</h1>
+          <p class="hero-copy">
+            Giao diện web được làm lại từ logic terminal dashboard để theo dõi
+            portfolio, tín hiệu, nến giá và lịch sử lệnh trong một màn hình dễ đọc hơn.
+          </p>
+          <div class="hero-meta">
+            <div class="pill">Focus: <strong id="focus-pill">Đang tải...</strong></div>
+            <div class="pill">Source: <strong id="source-pill">Đang tải...</strong></div>
+            <div class="pill">Ticks: <strong id="tick-pill">0</strong></div>
+            <div class="pill">Refresh: <strong>1 giây</strong></div>
           </div>
-        </div>
-        <div class="col-md-6">
-          <div class="card p-3 shadow-sm">
-            <h5 class="card-title text-muted">
-              Lợi nhuận đã chốt (Realized PnL)
-            </h5>
-            <h2 id="pnl" class="mb-0">Đang tải...</h2>
+        </article>
+
+        <section class="stats">
+          <article class="panel stat-card">
+            <div class="stat-label">Balance</div>
+            <div id="balance" class="stat-value">Đang tải...</div>
+            <div class="stat-sub">Số dư khả dụng hiện tại</div>
+          </article>
+          <article class="panel stat-card">
+            <div class="stat-label">Equity</div>
+            <div id="equity" class="stat-value">Đang tải...</div>
+            <div class="stat-sub">Giá trị tài khoản gồm vị thế mở</div>
+          </article>
+          <article class="panel stat-card">
+            <div class="stat-label">Realized / Unrealized PnL</div>
+            <div id="pnl" class="stat-value">Đang tải...</div>
+            <div id="pnl-sub" class="stat-sub">Đang tải...</div>
+          </article>
+        </section>
+      </section>
+
+      <section class="content-grid">
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Biểu đồ nến</div>
+              <div class="section-note" id="chart-note">Đang tải dữ liệu nến...</div>
+            </div>
+            <div class="section-actions">
+              <label for="symbol-select" class="section-note">Chọn mã</label>
+              <select id="symbol-select" class="symbol-select">
+                <option value="">Đang tải...</option>
+              </select>
+            </div>
           </div>
-        </div>
-      </div>
+          <div id="tvchart"></div>
+        </section>
 
-      <div class="card p-3 shadow-sm mb-4">
-        <h5 class="card-title text-muted mb-3">
-          Biểu đồ Giá Real-time (BTC/USDT)
-        </h5>
-        <div id="tvchart" style="width: 100%; height: 400px"></div>
-      </div>
+        <aside class="panel section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Danh sách symbol</div>
+              <div class="section-note">Bấm vào một symbol để đổi focus chart</div>
+            </div>
+          </div>
+          <div id="symbol-grid" class="symbol-grid">
+            <div class="empty">Đang tải thị trường...</div>
+          </div>
+        </aside>
 
-      <div class="card p-3 shadow-sm mb-5">
-        <h5 class="card-title text-muted mb-3">
-          Lịch sử Đặt lệnh (Order History)
-        </h5>
-        <div class="table-responsive">
-          <table class="table table-dark table-hover text-center align-middle">
-            <thead>
-              <tr>
-                <th>Mã (ID)</th>
-                <th>Thời gian</th>
-                <th>Cặp giao dịch</th>
-                <th>Loại lệnh</th>
-                <th>Giá khớp</th>
-                <th>Khối lượng</th>
-                <th>Trạng thái</th>
-              </tr>
-            </thead>
-            <tbody id="order-table-body">
-              <tr>
-                <td colspan="7">Đang chờ dữ liệu từ Bot...</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Lịch sử lệnh</div>
+              <div class="section-note">Các lệnh gần nhất toàn hệ thống</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Giá</th>
+                  <th>Khối lượng</th>
+                  <th>Trạng thái</th>
+                  <th>Trade PnL</th>
+                </tr>
+              </thead>
+              <tbody id="order-table-body">
+                <tr><td colspan="7" class="empty">Đang chờ dữ liệu...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="panel section">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Tín hiệu gần nhất</div>
+              <div class="section-note">Feed từ CEP và strategy</div>
+            </div>
+          </div>
+          <div id="signal-list" class="list-block">
+            <div class="empty">Chưa có tín hiệu.</div>
+          </div>
+        </aside>
+
+        <section class="panel section" style="grid-column: 1 / -1">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Chi tiết symbol đang chọn</div>
+              <div class="section-note" id="focus-detail-note">Chọn một symbol để xem chi tiết nến và giao dịch</div>
+            </div>
+          </div>
+          <div class="detail-grid">
+            <div class="list-block">
+              <div id="focus-metrics" class="metric-grid">
+                <div class="empty">Đang tải chi tiết...</div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Thời gian</th>
+                      <th>Open</th>
+                      <th>High</th>
+                      <th>Low</th>
+                      <th>Close</th>
+                      <th>Volume</th>
+                      <th>Ticks</th>
+                    </tr>
+                  </thead>
+                  <tbody id="focus-candle-body">
+                    <tr><td colspan="7" class="empty">Chưa có dữ liệu nến.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Thời gian</th>
+                    <th>Side</th>
+                    <th>Giá</th>
+                    <th>Khối lượng</th>
+                    <th>Trạng thái</th>
+                    <th>Trade PnL</th>
+                  </tr>
+                </thead>
+                <tbody id="focus-order-body">
+                  <tr><td colspan="6" class="empty">Chưa có giao dịch cho symbol này.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
 
     <script>
-      const API_BASE_URL = "http://localhost:8000/api";
+      const API_BASE_URL = `${window.location.origin}/api`;
+      let currentFocusSymbol = null;
+      let latestRows = [];
 
-      // ==========================================
-      // KHỞI TẠO BIỂU ĐỒ TRADINGVIEW
-      // ==========================================
-      const chart = LightweightCharts.createChart(
-        document.getElementById("tvchart"),
-        {
-          layout: {
-            background: { type: "solid", color: "#1e1e1e" }, // Khớp với màu thẻ card
-            textColor: "#d1d4dc",
-          },
-          grid: {
-            vertLines: { color: "#333" },
-            horzLines: { color: "#333" },
-          },
-          crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-          timeScale: {
-            timeVisible: true,
-            secondsVisible: true,
-          },
+      const chart = LightweightCharts.createChart(document.getElementById("tvchart"), {
+        layout: {
+          background: { type: "solid", color: "#0f172a" },
+          textColor: "#cbd5e1",
         },
-      );
-
-      // Cấu hình màu sắc cho Nến Nhật
-      const candleSeries = chart.addCandlestickSeries({
-        upColor: "#00ff88",
-        downColor: "#ff3366",
-        borderVisible: false,
-        wickUpColor: "#00ff88",
-        wickDownColor: "#ff3366",
+        grid: {
+          vertLines: { color: "rgba(148, 163, 184, 0.12)" },
+          horzLines: { color: "rgba(148, 163, 184, 0.12)" },
+        },
+        rightPriceScale: {
+          borderColor: "rgba(148, 163, 184, 0.18)",
+        },
+        timeScale: {
+          borderColor: "rgba(148, 163, 184, 0.18)",
+          timeVisible: true,
+          secondsVisible: true,
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        width: document.getElementById("tvchart").clientWidth,
+        height: 420,
       });
 
-      // Hàm gọi API lấy dữ liệu nến
-      async function updateChart() {
-        try {
-          const res = await fetch(`${API_BASE_URL}/candles`);
-          const data = await res.json();
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#22c55e",
+        downColor: "#f43f5e",
+        borderVisible: false,
+        wickUpColor: "#22c55e",
+        wickDownColor: "#f43f5e",
+      });
 
-          // Cập nhật nến lên biểu đồ nếu có dữ liệu
-          if (data && data.length > 0) {
-            candleSeries.setData(data);
-          }
-        } catch (error) {
-          console.error("Lỗi tải nến:", error);
+      function formatMoney(value) {
+        return `$${Number(value || 0).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+      }
+
+      function formatSignedMoney(value) {
+        const amount = Number(value || 0);
+        const sign = amount > 0 ? "+" : "";
+        return `${sign}${formatMoney(amount)}`;
+      }
+
+      function toneClass(value) {
+        const amount = Number(value || 0);
+        if (amount > 0) return "positive";
+        if (amount < 0) return "negative";
+        return "neutral";
+      }
+
+      function actionBadge(action) {
+        const normalized = String(action || "HOLD").toUpperCase();
+        if (normalized === "BUY") {
+          return '<span class="badge badge-buy">BUY</span>';
+        }
+        if (normalized === "SELL" || normalized === "SHORT") {
+          return `<span class="badge badge-sell">${normalized}</span>`;
+        }
+        return '<span class="badge badge-hold">HOLD</span>';
+      }
+
+      async function fetchJson(url, options = {}) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          throw new Error(`Request failed: ${response.status}`);
+        }
+        return response.json();
+      }
+
+      async function updateChart() {
+        if (!currentFocusSymbol) return;
+        const candles = await fetchJson(`${API_BASE_URL}/candles?symbol=${encodeURIComponent(currentFocusSymbol)}&limit=120`);
+        candleSeries.setData(candles);
+        chart.timeScale().fitContent();
+        document.getElementById("chart-note").textContent = `Focus ${currentFocusSymbol} • ${candles.length} candles`;
+      }
+
+      async function updateOrders() {
+        const orders = await fetchJson(`${API_BASE_URL}/orders?limit=12`);
+        const tbody = document.getElementById("order-table-body");
+
+        if (!orders.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty">Chưa có giao dịch nào.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = orders
+          .map((order) => {
+            const pnl = order.trade_pnl == null ? "-" : formatSignedMoney(order.trade_pnl);
+            return `
+              <tr>
+                <td>${new Date(order.timestamp).toLocaleTimeString()}</td>
+                <td><strong>${order.symbol}</strong></td>
+                <td>${actionBadge(order.side)}</td>
+                <td>${formatMoney(order.price)}</td>
+                <td>${Number(order.quantity).toFixed(4)}</td>
+                <td>${order.status}</td>
+                <td class="${toneClass(order.trade_pnl)}">${pnl}</td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+
+      async function updateFocusDetails() {
+        if (!currentFocusSymbol) return;
+
+        const [focusRow, candles, orders] = await Promise.all([
+          fetchJson(`${API_BASE_URL}/focus?symbol=${encodeURIComponent(currentFocusSymbol)}`),
+          fetchJson(`${API_BASE_URL}/candles?symbol=${encodeURIComponent(currentFocusSymbol)}&limit=8`),
+          fetchJson(`${API_BASE_URL}/orders?symbol=${encodeURIComponent(currentFocusSymbol)}&limit=8`),
+        ]);
+
+        document.getElementById("focus-detail-note").textContent =
+          `${currentFocusSymbol} • ${focusRow.source || "-"} • ${focusRow.trend_arrow} ${focusRow.trend_label}`;
+
+        document.getElementById("focus-metrics").innerHTML = `
+          <div class="mini-stat">
+            <div class="mini-stat-label">Giá hiện tại</div>
+            <div class="mini-stat-value">${formatMoney(focusRow.close)}</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-label">Biến động</div>
+            <div class="mini-stat-value ${toneClass(focusRow.change)}">${(Number(focusRow.change || 0) * 100).toFixed(2)}%</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-label">Edge / Confidence</div>
+            <div class="mini-stat-value">${Number(focusRow.edge || 0).toFixed(3)} / ${Number(focusRow.confidence || 0).toFixed(2)}</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-label">Vị thế / UPnL</div>
+            <div class="mini-stat-value ${toneClass(focusRow.unrealized)}">${Number(focusRow.position_qty || 0).toFixed(4)} • ${formatSignedMoney(focusRow.unrealized)}</div>
+          </div>
+        `;
+
+        const candleBody = document.getElementById("focus-candle-body");
+        if (!candles.length) {
+          candleBody.innerHTML = '<tr><td colspan="7" class="empty">Chưa có dữ liệu nến.</td></tr>';
+        } else {
+          candleBody.innerHTML = candles
+            .slice()
+            .reverse()
+            .map((candle) => `
+              <tr>
+                <td>${new Date(candle.timestamp).toLocaleTimeString()}</td>
+                <td>${Number(candle.open).toFixed(5)}</td>
+                <td>${Number(candle.high).toFixed(5)}</td>
+                <td>${Number(candle.low).toFixed(5)}</td>
+                <td>${Number(candle.close).toFixed(5)}</td>
+                <td>${Number(candle.volume).toFixed(4)}</td>
+                <td>${Number(candle.ticks)}</td>
+              </tr>
+            `)
+            .join("");
+        }
+
+        const focusOrderBody = document.getElementById("focus-order-body");
+        if (!orders.length) {
+          focusOrderBody.innerHTML = '<tr><td colspan="6" class="empty">Chưa có giao dịch cho symbol này.</td></tr>';
+        } else {
+          focusOrderBody.innerHTML = orders
+            .map((order) => {
+              const pnl = order.trade_pnl == null ? "-" : formatSignedMoney(order.trade_pnl);
+              return `
+                <tr>
+                  <td>${new Date(order.timestamp).toLocaleTimeString()}</td>
+                  <td>${actionBadge(order.side)}</td>
+                  <td>${formatMoney(order.price)}</td>
+                  <td>${Number(order.quantity).toFixed(4)}</td>
+                  <td>${order.status}</td>
+                  <td class="${toneClass(order.trade_pnl)}">${pnl}</td>
+                </tr>
+              `;
+            })
+            .join("");
         }
       }
 
-      // ==========================================
-      // VẼ MŨI TÊN BUY/SELL LÊN BIỂU ĐỒ (MARKERS)
-      // ==========================================
-      async function updateMarkers() {
-        try {
-          // Lấy 100 lệnh gần nhất để vẽ lên biểu đồ
-          const res = await fetch(`${API_BASE_URL}/orders?limit=100`);
-          if (!res.ok) return;
-          const orders = await res.json();
+      async function updateSignals() {
+        const signals = await fetchJson(`${API_BASE_URL}/signals?limit=8`);
+        const signalList = document.getElementById("signal-list");
 
-          if (!orders || orders.length === 0) return;
+        if (!signals.length) {
+          signalList.innerHTML = '<div class="empty">Chưa có tín hiệu.</div>';
+          return;
+        }
 
-          // 1. BẮT BUỘC: Sắp xếp lệnh theo thời gian Cũ -> Mới (Tăng dần)
-          orders.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        signalList.innerHTML = signals
+          .map((signal) => `<div class="list-item">${signal}</div>`)
+          .join("");
+      }
 
-          const markers = [];
-          let lastTime = 0;
+      async function setFocus(symbol) {
+        if (!symbol) return;
+        await fetchJson(`${API_BASE_URL}/focus?symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
+        currentFocusSymbol = symbol;
+        await updateChart();
+      }
 
-          orders.forEach((order) => {
-            // Chỉ vẽ những lệnh đã khớp thành công
-            if (order.status !== "FILLED") return;
+      function renderSymbolSelect(rows, focusSymbol) {
+        const select = document.getElementById("symbol-select");
+        if (!rows.length) {
+          select.innerHTML = '<option value="">Không có symbol</option>';
+          return;
+        }
 
-            // Chuyển đổi thời gian sang Unix Timestamp (giây)
-            const timeInSeconds = Math.floor(new Date(order.timestamp).getTime() / 1000);
+        select.innerHTML = rows
+          .map((row) => `<option value="${row.symbol}">${row.symbol}</option>`)
+          .join("");
 
-            // Bỏ qua nếu có 2 lệnh khớp trong cùng 1 giây (Tránh lỗi đè marker của TradingView)
-            if (timeInSeconds === lastTime) return;
-            lastTime = timeInSeconds;
+        select.value = focusSymbol || rows[0].symbol;
+      }
 
-            // Cấu hình mũi tên
-            if (order.side === "BUY") {
-              markers.push({
-                time: timeInSeconds,
-                position: "belowBar", // Nằm dưới cây nến
-                color: "#00ff88",
-                shape: "arrowUp",     // Mũi tên chĩa lên
-                text: "BUY",
-              });
-            } else if (order.side === "SELL") {
-              markers.push({
-                time: timeInSeconds,
-                position: "aboveBar", // Nằm trên cây nến
-                color: "#ff3366",
-                shape: "arrowDown",   // Mũi tên chĩa xuống
-                text: "SELL",
-              });
+      function renderSymbols(rows, focusSymbol) {
+        const container = document.getElementById("symbol-grid");
+
+        if (!rows.length) {
+          container.innerHTML = '<div class="empty">Không có symbol nào để hiển thị.</div>';
+          return;
+        }
+
+        container.innerHTML = rows
+          .map((row) => {
+            const priceClass = toneClass(row.change);
+            return `
+              <button type="button" class="symbol-card ${row.symbol === focusSymbol ? "active" : ""}" data-symbol="${row.symbol}">
+                <div class="symbol-top">
+                  <div>
+                    <div class="symbol-name">${row.symbol}</div>
+                    <div class="symbol-source">${(row.active_sources || []).join(", ") || row.source}</div>
+                  </div>
+                  <div class="${priceClass}"><strong>${formatMoney(row.close)}</strong></div>
+                </div>
+                <div class="symbol-bottom">
+                  <div class="symbol-extra">
+                    Trend ${row.trend_arrow} ${row.trend_label} • Edge ${Number(row.edge).toFixed(3)}
+                  </div>
+                  <div>${actionBadge(row.action)}</div>
+                </div>
+              </button>
+            `;
+          })
+          .join("");
+
+        container.querySelectorAll(".symbol-card").forEach((card) => {
+          card.addEventListener("click", async () => {
+            const symbol = card.dataset.symbol;
+            if (symbol && symbol !== currentFocusSymbol) {
+              await setFocus(symbol);
+              await refreshDashboard();
             }
           });
-
-          // 2. Gắn mảng mũi tên này vào chuỗi nến hiện tại
-          candleSeries.setMarkers(markers);
-        } catch (error) {
-          console.error("Lỗi vẽ Markers mũi tên:", error);
-        }
+        });
       }
 
-      // ==========================================
-      // CẬP NHẬT THÔNG SỐ VÍ VÀ LỊCH SỬ LỆNH
-      // ==========================================
-      async function fetchDashboardData() {
-        try {
-          // 1. Gọi API lấy thông tin ví
-          const portRes = await fetch(`${API_BASE_URL}/portfolio`);
-          const portData = await portRes.json();
+      function renderSummary(state) {
+        const summary = state.summary || {};
+        document.getElementById("balance").textContent = formatMoney(summary.balance_usdt);
+        document.getElementById("equity").textContent = formatMoney(summary.equity);
 
-          // Cập nhật lên UI (Format tiền tệ)
-          document.getElementById("balance").innerText =
-            "$" +
-            portData.balance_usdt.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            });
+        const pnlEl = document.getElementById("pnl");
+        pnlEl.textContent = `${formatSignedMoney(summary.realized_pnl)} / ${formatSignedMoney(summary.total_unrealized_pnl)}`;
+        pnlEl.className = `stat-value ${toneClass((summary.realized_pnl || 0) + (summary.total_unrealized_pnl || 0))}`;
 
-          const pnlElement = document.getElementById("pnl");
-          const pnlValue = portData.realized_pnl;
-          pnlElement.innerText =
-            "$" +
-            pnlValue.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            });
-          pnlElement.className =
-            pnlValue >= 0 ? "text-success mb-0" : "text-danger mb-0";
+        document.getElementById("pnl-sub").textContent =
+          `Realized ${formatSignedMoney(summary.realized_pnl)} • Unrealized ${formatSignedMoney(summary.total_unrealized_pnl)}`;
 
-          // 2. Gọi API lấy lịch sử lệnh
-          const ordRes = await fetch(`${API_BASE_URL}/orders?limit=15`);
-          const orders = await ordRes.json();
-
-          const tbody = document.getElementById("order-table-body");
-          tbody.innerHTML = ""; // Xóa dòng chờ dữ liệu
-
-          if (orders.length === 0) {
-            tbody.innerHTML =
-              '<tr><td colspan="7">Chưa có giao dịch nào</td></tr>';
-            return;
-          }
-
-          orders.forEach((order) => {
-            const sideColor =
-              order.side === "BUY" ? "text-success" : "text-danger";
-            const timeString = new Date(order.timestamp).toLocaleTimeString();
-
-            const row = `
-                        <tr>
-                            <td>#${order.id}</td>
-                            <td>${timeString}</td>
-                            <td><strong>${order.symbol}</strong></td>
-                            <td class="${sideColor}"><strong>${order.side}</strong></td>
-                            <td>$${order.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                            <td>${order.quantity}</td>
-                            <td><span class="badge bg-secondary">${order.status}</span></td>
-                        </tr>
-                    `;
-            tbody.innerHTML += row;
-          });
-        } catch (error) {
-          console.error("Lỗi mất kết nối Backend:", error);
-        }
+        document.getElementById("focus-pill").textContent = state.focus_symbol || "-";
+        document.getElementById("source-pill").textContent = (state.sources || []).join(", ") || "-";
+        document.getElementById("tick-pill").textContent = state.tick_count ?? 0;
       }
 
-      // ==========================================
-      // VÒNG LẶP CHẠY REAL-TIME
-      // ==========================================
+      async function refreshDashboard() {
+        const state = await fetchJson(`${API_BASE_URL}/state`);
+        currentFocusSymbol = state.focus_symbol || currentFocusSymbol;
+        latestRows = state.rows || [];
+        renderSummary(state);
+        renderSymbolSelect(latestRows, currentFocusSymbol);
+        renderSymbols(latestRows, currentFocusSymbol);
+        await Promise.all([updateChart(), updateOrders(), updateSignals(), updateFocusDetails()]);
+      }
 
-      // Gọi lần đầu để có dữ liệu ngay lập tức
-      fetchDashboardData();
-      updateChart();
-      updateMarkers(); // <-- Lần chạy đầu tiên
+      document.getElementById("symbol-select").addEventListener("change", async (event) => {
+        const symbol = event.target.value;
+        if (symbol && symbol !== currentFocusSymbol) {
+          await setFocus(symbol);
+          await refreshDashboard();
+        }
+      });
 
-      // Quét API liên tục mỗi 1 giây
-      setInterval(() => {
-        fetchDashboardData();
-        updateChart();
-        updateMarkers(); // <-- Quét mũi tên liên tục mỗi giây
-      }, 1000);
+      refreshDashboard();
+      setInterval(refreshDashboard, 1000);
 
-      // Đảm bảo biểu đồ tự resize khi thu phóng cửa sổ trình duyệt
       window.addEventListener("resize", () => {
         chart.applyOptions({
           width: document.getElementById("tvchart").clientWidth,

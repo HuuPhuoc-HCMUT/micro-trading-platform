@@ -7,6 +7,7 @@ from datetime import datetime
 
 # Import CEP Detectors
 from cep_engine.moving_average import MovingAverageDetector
+from cep_engine.probabilistic_signal import ProbabilisticSignalDetector
 from cep_engine.spike_detector import SpikeDetector
 from cep_engine.volume_anomaly import VolumeAnomalyDetector
 
@@ -116,6 +117,12 @@ def run_subscriber():
     ma_detector = MovingAverageDetector(short_window=15, long_window=60)
     spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
     volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
+    probabilistic_detector = ProbabilisticSignalDetector(
+        window_size=60,
+        min_history=20,
+        learning_rate=0.06,
+        signal_threshold=0.20,
+    )
 
     # 2. Khởi tạo Trading Engine
     order_manager = OrderManager(initial_balance=10000.0)
@@ -140,6 +147,9 @@ def run_subscriber():
                 
             vol_alert = volume_detector.process(event)
             if vol_alert: alerts.append(vol_alert)
+
+            probability_alert = probabilistic_detector.process(event)
+            if probability_alert: alerts.append(probability_alert)
 
             # Đưa toàn bộ alerts vào Bộ não Strategy xử lý
             strategy.execute(alerts, event)

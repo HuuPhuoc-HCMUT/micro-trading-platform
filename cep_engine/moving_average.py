@@ -1,5 +1,7 @@
 import logging
+import math
 from datetime import datetime, timezone
+from statistics import pstdev
 
 from models.alert import Alert
 from models.price_event import PriceEvent
@@ -69,6 +71,10 @@ class MovingAverageDetector:
 
         prev_short = self.prev_short_ma[symbol]
         prev_long = self.prev_long_ma[symbol]
+        recent_prices = self.prices[symbol][-self.long_window:]
+        volatility = pstdev(recent_prices) / long_ma if len(recent_prices) > 1 and long_ma else 0.0
+        spread_ratio = (short_ma - long_ma) / long_ma if long_ma else 0.0
+        confidence = min(0.95, 0.5 + abs(spread_ratio) / max(volatility, 0.002) * 0.08)
 
         # Update state before returning
         self.prev_short_ma[symbol] = short_ma
@@ -80,7 +86,6 @@ class MovingAverageDetector:
 
         # Golden cross: short was below long, now short is above long
         if prev_short <= prev_long and short_ma > long_ma:
-            
             return Alert(
                 signal_type="MA_CROSSOVER",
                 symbol=symbol,
@@ -90,11 +95,20 @@ class MovingAverageDetector:
                     f"crossed above SMA({self.long_window})={long_ma:.2f}"
                 ),
                 triggered_at=datetime.now(timezone.utc),
+                direction="BUY",
+                confidence=confidence,
+                score=math.tanh(abs(spread_ratio) / max(volatility, 0.002)),
+                expected_return=max(spread_ratio, 0.0),
+                metadata={
+                    "short_ma": round(short_ma, 6),
+                    "long_ma": round(long_ma, 6),
+                    "spread_ratio": round(spread_ratio, 6),
+                    "volatility": round(volatility, 6),
+                },
             )
 
         # Death cross: short was above long, now short is below long
         if prev_short >= prev_long and short_ma < long_ma:
-            
             return Alert(
                 signal_type="MA_CROSSOVER",
                 symbol=symbol,
@@ -104,6 +118,16 @@ class MovingAverageDetector:
                     f"crossed below SMA({self.long_window})={long_ma:.2f}"
                 ),
                 triggered_at=datetime.now(timezone.utc),
+                direction="SELL",
+                confidence=confidence,
+                score=-math.tanh(abs(spread_ratio) / max(volatility, 0.002)),
+                expected_return=min(spread_ratio, 0.0),
+                metadata={
+                    "short_ma": round(short_ma, 6),
+                    "long_ma": round(long_ma, 6),
+                    "spread_ratio": round(spread_ratio, 6),
+                    "volatility": round(volatility, 6),
+                },
             )
 
         return None
