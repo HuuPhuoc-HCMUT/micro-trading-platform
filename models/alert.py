@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Alert(BaseModel):
@@ -10,3 +10,8 @@ class Alert(BaseModel):
     message: str
     triggered_at: datetime
     price: float = 0.0
+    direction: str | None = None
+    confidence: float = 0.0
+    score: float = 0.0
+    expected_return: float = 0.0
+    metadata: dict[str, float | int | str | bool] = Field(default_factory=dict)

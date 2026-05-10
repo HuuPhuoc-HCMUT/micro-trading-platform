@@ -22,9 +22,15 @@ def init_db():
                 side TEXT,
                 price REAL,
                 quantity REAL,
-                status TEXT
+                status TEXT,
+                trade_pnl REAL
             )
         ''')
+        # Migration: thêm cột trade_pnl nếu chưa có (DB cũ)
+        try:
+            cursor.execute("ALTER TABLE orders ADD COLUMN trade_pnl REAL")
+        except sqlite3.OperationalError:
+            pass  # Cột đã tồn tại
         
         # Bảng Balance (Lưu vết biến động số dư và PnL)
         cursor.execute('''
@@ -39,14 +45,26 @@ def init_db():
         # Bảng Price History (Lưu nến OHLCV)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS price_history (
-                timestamp TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                symbol TEXT DEFAULT '',
                 open REAL,
                 high REAL,
                 low REAL,
                 close REAL,
-                volume REAL
+                volume REAL,
+                ticks_count INTEGER DEFAULT 1
             )
         ''')
+        # Migration: thêm cột symbol và ticks_count nếu chưa có (DB cũ)
+        for col_sql in [
+            "ALTER TABLE price_history ADD COLUMN symbol TEXT DEFAULT ''",
+            "ALTER TABLE price_history ADD COLUMN ticks_count INTEGER DEFAULT 1",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Cột đã tồn tại
 
         # Bảng Alerts (Lưu tín hiệu CEP)
         cursor.execute('''
@@ -89,7 +107,7 @@ def save_balance(balance_usdt: float, realized_pnl: float):
         conn.commit()
 
 def save_candle(event):
-    """Lưu 1 cây nến vào DB. Dùng REPLACE để lỡ có trùng timestamp thì cập nhật luôn."""
+    """Lưu 1 cây nến vào DB."""
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         ts = event.timestamp.isoformat() if isinstance(event.timestamp, datetime) else event.timestamp
@@ -100,9 +118,9 @@ def save_candle(event):
         low_p = getattr(event, 'low', event.price) or event.price
         
         cursor.execute('''
-            INSERT OR REPLACE INTO price_history (timestamp, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (ts, open_p, high_p, low_p, event.price, event.volume))
+            INSERT INTO price_history (timestamp, symbol, open, high, low, close, volume, ticks_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, event.symbol, open_p, high_p, low_p, event.price, event.volume, 1))
         conn.commit()
 
 def save_alert(alert) -> None:

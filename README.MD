@@ -1,4 +1,4 @@
-Data Simulator → CEP Engine → Trading Rule → Output
+Data Simulator -> CEP Engine -> Trading Rule -> Output
 
 Mô phỏng data trước
 CEP engine xử lý:
@@ -11,7 +11,7 @@ Sau khi pipeline chạy ổn, thay simulator bằng producer gửi vào Kafka.
 
 Việc đầu tiên của cả nhóm (trong 1–2 ngày)
 + Tạo prototype chạy local:
-+ price stream → CEP → trading rule → log output
++ price stream -> CEP -> trading rule -> log output
 
 Chưa cần: Kafka, API, UI (copy của Opensource Trading Platform) - TradingView Charting Library
 
@@ -40,7 +40,7 @@ Here's the complete flow, step by step:
 Your project is a **pipeline** — data flows in one direction through 5 stages:
 
 ```
-Raw Price Data → Normalize → Detect Patterns → Make Trading Decisions → Store & Expose
+Raw Price Data -> Normalize -> Detect Patterns -> Make Trading Decisions -> Store & Expose
 ```
 
 ---
@@ -93,8 +93,8 @@ PriceEvent(
 **Logic:**
 1. Maintain two moving averages: **short** (e.g., 5 periods) and **long** (e.g., 20 periods)
 2. Short MA = average of the last 5 prices, Long MA = average of the last 20
-3. **Golden Cross** (BUY signal): short MA was *below* long MA, now crosses *above* → price trending up
-4. **Death Cross** (SELL signal): short MA was *above* long MA, now crosses *below* → price trending down
+3. **Golden Cross** (BUY signal): short MA was *below* long MA, now crosses *above* -> price trending up
+4. **Death Cross** (SELL signal): short MA was *above* long MA, now crosses *below* -> price trending down
 
 ```
 Price: ~~~~~/\/\/\~~~~~
@@ -112,7 +112,7 @@ Long MA:    ───────      (reacts slow)
 2. Calculate percentage change: $(price_{now} - price_{prev}) / price_{prev}$
 3. If $|change| > threshold$ (e.g., 5%), fire an alert
 
-**Example:** BTC was $40,000 → now $42,500 in 10 seconds = +6.25% → **SPIKE_DETECTED**
+**Example:** BTC was $40,000 -> now $42,500 in 10 seconds = +6.25% -> **SPIKE_DETECTED**
 
 **Output:** `Alert(signal_type="SPIKE_DETECTED", severity="HIGH", ...)`  or  `None`
 
@@ -123,7 +123,7 @@ Long MA:    ───────      (reacts slow)
 2. If current volume > $Y \times rolling\_average$ (e.g., 3x), flag it
 3. Abnormal volume often precedes big price moves
 
-**Example:** Average volume is 100 BTC/min → current volume is 450 BTC/min → 4.5x → **VOLUME_ANOMALY**
+**Example:** Average volume is 100 BTC/min -> current volume is 450 BTC/min -> 4.5x -> **VOLUME_ANOMALY**
 
 **Output:** `Alert(signal_type="VOLUME_ANOMALY", severity="HIGH", ...)`  or  `None`
 
@@ -148,6 +148,229 @@ The strategy can also combine multiple alerts — e.g., only buy when *both* MA 
 
 **Output:** A decision like `("BUY", "BTC/USDT", quantity)` or `None` (hold).
 
+### 4a.1. Trading Math — How the BUY/SELL decision is made
+
+The current strategy is no longer a simple "if signal then buy" rule. It turns multiple alerts into a **single probabilistic decision** with three main ideas:
+
+1. **Direction** — should we lean BUY or SELL?
+2. **Strength** — is the edge strong enough to trade?
+3. **Sizing** — if we trade, how big should the position be?
+
+#### Step A: Aggregate many alerts into one signal
+
+Each alert contributes:
+- `direction`: BUY or SELL
+- `confidence`: how trustworthy the alert is
+- `score`: how strong the alert is
+- `expected_return`: estimated upside/downside
+- `metadata`: extra context such as realized volatility
+
+The strategy loops through all alerts for one symbol and builds:
+
+- `edge`: weighted directional strength
+- `expected_return`: weighted expected return
+- `confidence`: average confidence across alerts
+- `realized_volatility`: the highest volatility seen in the alert metadata
+- `has_volume_confirmation`: whether volume anomaly confirms the move
+
+Conceptually:
+
+```text
+edge = sum(weight * score)
+expected_return = sum(weight * expected_return)
+confidence = average(alert confidences)
+```
+
+Where:
+- `weight = max(confidence, 0.35)` so weak-confidence alerts are not allowed to collapse to zero weight
+- SELL alerts contribute negative direction
+- If `VOLUME_ANOMALY` is present, the strategy boosts the final signal:
+  - `edge *= 1.15`
+  - `expected_return *= 1.10`
+
+This means volume acts as a confirmation layer rather than a standalone buy/sell trigger.
+
+#### Step B: Decide BUY, SELL, or HOLD
+
+After aggregation, the strategy checks whether the signal is strong enough:
+
+```text
+if abs(edge) < 0.2:
+    HOLD
+
+if abs(expected_return) < 0.0005:
+    HOLD
+```
+
+Only when both thresholds are passed does the engine consider trading:
+
+- If `edge > 0` -> `BUY`
+- If `edge < 0` and there is an open long position -> `SELL`
+- If `edge < 0` but no inventory is held -> `HOLD`
+
+So a BUY is not triggered by one alert alone. It requires:
+- positive directional edge
+- enough expected payoff
+- enough confidence after aggregation
+
+#### Step C: Estimate win probability from edge
+
+The strategy converts edge into an approximate probability of success:
+
+```text
+win_probability = 0.5 + min(abs(edge), 1.5) / 3
+```
+
+Then clamps it into a safe range:
+
+```text
+0.01 <= win_probability <= 0.99
+```
+
+Interpretation:
+- `0.5` means "coin flip"
+- larger edge pushes probability above 50%
+- probability is capped so the system never assumes certainty
+
+#### Step D: Compare reward vs risk
+
+The strategy estimates the reward-to-risk ratio using:
+
+```text
+reward_to_risk = abs(expected_return) / realized_volatility
+```
+
+But it also enforces a minimum floor:
+
+```text
+reward_to_risk >= 0.35
+```
+
+This prevents very small volatility values from making the ratio unstable.
+
+#### Step E: Use Kelly-style sizing
+
+Position size is then derived from a Kelly-like formula:
+
+```text
+kelly_fraction = win_probability - ((1 - win_probability) / reward_to_risk)
+```
+
+If that becomes negative, it is clipped to zero.
+
+Then the strategy adjusts by confidence:
+
+```text
+capped_fraction = min(kelly_fraction * confidence, max_balance_risk)
+```
+
+With current defaults:
+- `max_balance_risk = 0.18`
+
+So even if the model is very bullish, the strategy will not risk more than 18% of balance on a single trade idea.
+
+#### Step F: Convert signal strength into dollars
+
+The strategy mixes:
+- a Kelly-style capital fraction from available balance
+- a symbol-specific baseline trade size
+- a hard minimum notional
+
+Base trade sizes:
+
+| Symbol | Base Quantity |
+|--------|---------------|
+| BTC/USDT | 0.05 |
+| ETH/USDT | 0.5 |
+| SOL/USDT | 5.0 |
+
+Base notional:
+
+```text
+base_notional = base_quantity * price
+```
+
+Adaptive notional:
+
+```text
+adaptive_notional = max(base_notional * confidence * (1 + abs(edge)), min_trade_notional)
+```
+
+Final target notional:
+
+```text
+target_notional = min(
+    balance * capped_fraction + adaptive_notional * 0.25,
+    balance * max_balance_risk
+)
+```
+
+With current defaults:
+- `min_trade_notional = 25 USD`
+
+This gives the strategy three useful behaviors:
+- do not place tiny meaningless orders
+- scale up when signal quality is higher
+- still obey a strict portfolio risk cap
+
+#### Step G: Turn notional into order quantity
+
+Once the target notional is known:
+
+```text
+quantity = target_notional / current_price
+```
+
+For BUY:
+- available notional is capped by current cash balance
+- the order is sent only if order value is at least `25 USD`
+
+For SELL:
+- the strategy reduces or exits an existing long
+- reduction factor is:
+
+```text
+reduction_factor = min(1.0, abs(edge) * confidence)
+```
+
+- sell quantity is based on both current position size and the target quantity
+- sell orders are allowed at half the minimum notional threshold:
+  - `>= 12.5 USD`
+
+#### Step H: Final acceptance in OrderManager
+
+Even if the strategy wants to trade, the order manager still validates the order:
+
+- BUY only fills if cash balance is enough
+- SELL only fills if held quantity is enough
+- filled BUY updates:
+  - cash balance
+  - position quantity
+  - average entry price
+- filled SELL updates:
+  - cash balance
+  - realized P&L
+  - remaining position
+
+#### A concrete mental model
+
+You can think of the strategy as:
+
+```text
+many alerts
+-> one combined edge
+-> check if edge is strong enough
+-> estimate probability and reward/risk
+-> decide how much capital is safe to allocate
+-> place BUY/SELL only if the trade is meaningful
+```
+
+That is why the engine sometimes shows a signal on the dashboard but still does **not** place an order:
+- the edge may be positive, but too weak
+- the expected return may be too small
+- the resulting order may be below minimum notional
+- balance or inventory may be insufficient
+
 ### 4b. Order Manager — [order_manager.py](trading_engine/order_manager.py)
 
 **What happens:** Takes the strategy's decision and executes it as a **paper trade**.
@@ -155,10 +378,10 @@ The strategy can also combine multiple alerts — e.g., only buy when *both* MA 
 **The full lifecycle:**
 1. **Check balance** — Do we have enough USDT to buy? Do we hold enough BTC to sell?
 2. **Create order** — `Order(side="BUY", symbol="BTC/USDT", quantity=0.1, price=40123.45, status="PENDING")`
-3. **Fill order** — Since this is paper trading, orders fill instantly at current price. Status → `"FILLED"`
+3. **Fill order** — Since this is paper trading, orders fill instantly at current price. Status -> `"FILLED"`
 4. **Update position** — Track what we hold:
-   - After buying 0.1 BTC @ $40,123.45 → position: `{BTC: 0.1, avg_entry: 40123.45}`
-   - After selling 0.1 BTC @ $41,000 → position: `{BTC: 0.0}`, realized P&L: +$87.66
+   - After buying 0.1 BTC @ $40,123.45 -> position: `{BTC: 0.1, avg_entry: 40123.45}`
+   - After selling 0.1 BTC @ $41,000 -> position: `{BTC: 0.0}`, realized P&L: +$87.66
 5. **Update balance** — Deduct USDT on buy, add USDT on sell
 6. **Save to database**
 
@@ -186,12 +409,12 @@ Everything gets persisted to SQLite:
 FastAPI exposes the data via REST endpoints so you could plug in a frontend later:
 
 ```
-GET  /health          → is the system running?
-GET  /prices/BTC-USDT → latest price for BTC
-GET  /orders          → all orders (history)
-POST /orders          → manually place a paper order
-GET  /positions       → what do we hold? what's the P&L?
-GET  /alerts          → recent CEP signals
+GET  /health          -> is the system running?
+GET  /prices/BTC-USDT -> latest price for BTC
+GET  /orders          -> all orders (history)
+POST /orders          -> manually place a paper order
+GET  /positions       -> what do we hold? what's the P&L?
+GET  /alerts          -> recent CEP signals
 ```
 
 ---
@@ -224,10 +447,10 @@ loop forever (or for N iterations):
 In Phase 2, **Kafka** decouples the stages:
 
 ```
-Simulator/Exchange → [Kafka topic: market_data] → Normalizer
-Normalizer → [Kafka topic: price_events] → CEP Engine  
-CEP Engine → [Kafka topic: alerts] → Trading Engine
-Trading Engine → [Kafka topic: orders] → Database
+Simulator/Exchange -> [Kafka topic: market_data] -> Normalizer
+Normalizer -> [Kafka topic: price_events] -> CEP Engine  
+CEP Engine -> [Kafka topic: alerts] -> Trading Engine
+Trading Engine -> [Kafka topic: orders] -> Database
 ```
 
 Each component becomes an **independent consumer/producer** instead of direct function calls. This means:
@@ -246,11 +469,11 @@ But **the logic inside each stage stays exactly the same** — only the transpor
 > **Normalizer** wraps it in a `PriceEvent`.
 > 
 > **CEP Engine** runs all 3 detectors:
-> - Moving average: short MA just crossed above long MA → `Alert(MA_CROSSOVER)`
-> - Spike detector: 5.5% > 5% threshold → `Alert(SPIKE_DETECTED)`
-> - Volume anomaly: volume normal → `None`
+> - Moving average: short MA just crossed above long MA -> `Alert(MA_CROSSOVER)`
+> - Spike detector: 5.5% > 5% threshold -> `Alert(SPIKE_DETECTED)`
+> - Volume anomaly: volume normal -> `None`
 > 
-> **Strategy** sees MA_CROSSOVER + SPIKE_DETECTED → decides **BUY**.
+> **Strategy** sees MA_CROSSOVER + SPIKE_DETECTED -> decides **BUY**.
 > 
 > **Order Manager** checks balance ($10,000 USDT available), creates order for 0.1 BTC @ $42,200, fills it immediately. Balance: $5,780. Position: 0.1 BTC.
 > 
