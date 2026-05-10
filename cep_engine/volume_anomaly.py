@@ -42,6 +42,7 @@ class VolumeAnomalyDetector:
                         f"{event.volume / avg_volume:.1f}x the average ({avg_volume:.4f})"
                     ),
                     triggered_at=datetime.now(timezone.utc),
+                    price=event.price,
                 )
                 
                 self.history[symbol].append(event.volume)

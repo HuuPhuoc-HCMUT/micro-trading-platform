@@ -53,6 +53,7 @@ class SpikeDetector:
                         f"over last {self.window_size} ticks. Current: ${current_price:.2f}"
                     ),
                     triggered_at=datetime.now(timezone.utc),
+                    price=current_price,
                 )
 
         return None

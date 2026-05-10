@@ -307,20 +307,11 @@ def run_kafka_strategy_worker() -> None:
             symbol = alert.symbol
             alert_buffer.setdefault(symbol, []).append(alert)
 
-            # Build a synthetic PriceEvent from the alert's trigger price
-            # (extracted from the message when available, otherwise cached).
-            # The strategy only needs event.symbol and event.price.
-            cached_price = price_cache.get(symbol, 0.0)
+            # Use the price embedded directly in the alert
+            if alert.price > 0.0:
+                price_cache[symbol] = alert.price
 
-            # Try to parse price from alert message ("... @ $42000.00")
-            try:
-                import re
-                match = re.search(r"\$([0-9]+(?:\.[0-9]+)?)", alert.message)
-                if match:
-                    cached_price = float(match.group(1))
-                    price_cache[symbol] = cached_price
-            except Exception:
-                pass
+            cached_price = price_cache.get(symbol, 0.0)
 
             if cached_price == 0.0:
                 # Not enough info yet — wait for a price-bearing alert

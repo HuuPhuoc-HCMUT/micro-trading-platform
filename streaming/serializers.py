@@ -114,6 +114,7 @@ def serialize_alert(alert: Alert) -> bytes:
         "severity": alert.severity,
         "message": alert.message,
         "triggered_at": _dt_to_str(alert.triggered_at),
+        "price": alert.price,
     }
     return _to_bytes(payload)
 

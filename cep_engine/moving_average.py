@@ -92,6 +92,7 @@ class MovingAverageDetector:
                     f"crossed above SMA({self.long_window})={long_ma:.2f}"
                 ),
                 triggered_at=datetime.now(timezone.utc),
+                price=event.price,
             )
 
         # Death cross: short was above long, now short is below long
@@ -106,6 +107,7 @@ class MovingAverageDetector:
                     f"crossed below SMA({self.long_window})={long_ma:.2f}"
                 ),
                 triggered_at=datetime.now(timezone.utc),
+                price=event.price,
             )
 
         return None
