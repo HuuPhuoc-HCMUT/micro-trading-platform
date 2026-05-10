@@ -1,8 +1,9 @@
 from datetime import datetime
 import sqlite3
+from pathlib import Path
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 
 app = FastAPI(
     title="Micro Trading API",
@@ -36,7 +37,9 @@ def query_db(query: str, args: tuple = (), one: bool = False):
 
 @app.get("/")
 def read_root():
-    return {"status": "🚀 API Server đang chạy mượt mà!"}
+    """Serve the trading dashboard HTML."""
+    html_path = Path(__file__).parent.parent / "index.html"
+    return FileResponse(html_path, media_type="text/html")
 
 @app.get("/api/portfolio")
 def get_portfolio():
@@ -201,8 +204,8 @@ def get_state():
         SELECT symbol, close, open,
                (close - open) / NULLIF(open, 0) AS change
         FROM price_history
-        WHERE id IN (
-            SELECT MAX(id) FROM price_history GROUP BY symbol
+        WHERE timestamp IN (
+            SELECT MAX(timestamp) FROM price_history GROUP BY symbol
         )
         ORDER BY symbol
         """
