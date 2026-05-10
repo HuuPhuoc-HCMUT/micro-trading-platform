@@ -47,7 +47,20 @@ def init_db():
                 volume REAL
             )
         ''')
-        
+
+        # Bảng Alerts (Lưu tín hiệu CEP)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                triggered_at TEXT,
+                signal_type TEXT,
+                symbol TEXT,
+                severity TEXT,
+                message TEXT,
+                price REAL
+            )
+        ''')
+
         conn.commit()
         logger.info("🗄️ Database (SQLite) đã được khởi tạo thành công. Sẵn sàng lưu sổ sách!")
 
@@ -90,4 +103,15 @@ def save_candle(event):
             INSERT OR REPLACE INTO price_history (timestamp, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (ts, open_p, high_p, low_p, event.price, event.volume))
+        conn.commit()
+
+def save_alert(alert) -> None:
+    """Ghi một tín hiệu CEP vào Database."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        ts = alert.triggered_at.isoformat() if isinstance(alert.triggered_at, datetime) else alert.triggered_at
+        cursor.execute('''
+            INSERT INTO alerts (triggered_at, signal_type, symbol, severity, message, price)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (ts, alert.signal_type, alert.symbol, alert.severity, alert.message, alert.price))
         conn.commit()

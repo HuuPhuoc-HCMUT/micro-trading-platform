@@ -84,3 +84,13 @@ def get_candles(limit: int = 100):
         })
         
     return formatted_candles
+
+
+@app.get("/api/alerts")
+def get_alerts(limit: int = 20):
+    """Lấy danh sách tín hiệu CEP gần nhất."""
+    alerts = query_db(
+        "SELECT * FROM alerts ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    return alerts

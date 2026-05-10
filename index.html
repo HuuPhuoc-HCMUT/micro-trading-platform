@@ -71,6 +71,31 @@
         <div id="tvchart" style="width: 100%; height: 400px"></div>
       </div>
 
+      <div class="card p-3 shadow-sm mb-4">
+        <h5 class="card-title text-muted mb-3">
+          Tín hiệu CEP gần nhất (Recent Alerts)
+        </h5>
+        <div class="table-responsive">
+          <table class="table table-dark table-hover text-center align-middle">
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Loại tín hiệu</th>
+                <th>Cặp</th>
+                <th>Mức độ</th>
+                <th>Giá</th>
+                <th>Thông điệp</th>
+              </tr>
+            </thead>
+            <tbody id="alert-table-body">
+              <tr>
+                <td colspan="6">Đang chờ tín hiệu từ CEP Engine...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card p-3 shadow-sm mb-5">
         <h5 class="card-title text-muted mb-3">
           Lịch sử Đặt lệnh (Order History)
@@ -268,19 +293,72 @@
       }
 
       // ==========================================
+      // CẬP NHẬT BẢNG TÍN HIỆU CEP (ALERTS)
+      // ==========================================
+      async function updateAlerts() {
+        try {
+          const res = await fetch(`${API_BASE_URL}/alerts?limit=10`);
+          if (!res.ok) return;
+          const alerts = await res.json();
+
+          const tbody = document.getElementById("alert-table-body");
+          if (!alerts || alerts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6">Chưa có tín hiệu nào</td></tr>';
+            return;
+          }
+
+          tbody.innerHTML = "";
+          alerts.forEach((alert) => {
+            const severityColor =
+              alert.severity === "HIGH"
+                ? "text-danger"
+                : alert.severity === "MEDIUM"
+                ? "text-warning"
+                : "text-info";
+
+            const signalIcon =
+              alert.signal_type === "MA_CROSSOVER"
+                ? "📈"
+                : alert.signal_type === "SPIKE_DETECTED"
+                ? "⚡"
+                : "📊";
+
+            const timeString = new Date(alert.triggered_at).toLocaleTimeString();
+            const priceStr = alert.price
+              ? "$" + alert.price.toLocaleString(undefined, { minimumFractionDigits: 2 })
+              : "—";
+
+            tbody.innerHTML += `
+              <tr>
+                <td>${timeString}</td>
+                <td>${signalIcon} ${alert.signal_type}</td>
+                <td><strong>${alert.symbol}</strong></td>
+                <td class="${severityColor}"><strong>${alert.severity}</strong></td>
+                <td>${priceStr}</td>
+                <td class="text-start text-muted small">${alert.message}</td>
+              </tr>`;
+          });
+        } catch (error) {
+          console.error("Lỗi tải alerts:", error);
+        }
+      }
+
+      // ==========================================
       // VÒNG LẶP CHẠY REAL-TIME
       // ==========================================
 
       // Gọi lần đầu để có dữ liệu ngay lập tức
       fetchDashboardData();
       updateChart();
-      updateMarkers(); // <-- Lần chạy đầu tiên
+      updateMarkers();
+      updateAlerts();
 
       // Quét API liên tục mỗi 1 giây
       setInterval(() => {
         fetchDashboardData();
         updateChart();
-        updateMarkers(); // <-- Quét mũi tên liên tục mỗi giây
+        updateMarkers();
+        updateAlerts();
       }, 1000);
 
       // Đảm bảo biểu đồ tự resize khi thu phóng cửa sổ trình duyệt

@@ -25,7 +25,7 @@ from data_source.coinbase_client import stream_trades as coinbase_stream
 from data_source.kraken_client import stream_trades as kraken_stream
 from data_source.time_aggregator import TimeAggregator # <--- THÊM DÒNG NÀY Ở ĐẦU FILE
 
-from database.db import init_db, save_candle
+from database.db import init_db, save_candle, save_alert
 
 from logger_config import setup_logging
 
@@ -222,6 +222,8 @@ def run_kafka_cep_worker() -> None:
         KAFKA_BOOTSTRAP_SERVERS,
     )
 
+    init_db()
+
     ma_detector = MovingAverageDetector(short_window=15, long_window=60)
     spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
     volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
@@ -241,6 +243,8 @@ def run_kafka_cep_worker() -> None:
                 logger.error("Failed to deserialise PriceEvent: %s", exc)
                 continue
 
+            save_candle(event)
+
             detectors = [ma_detector, spike_detector, volume_detector]
             for detector in detectors:
                 try:
@@ -250,6 +254,7 @@ def run_kafka_cep_worker() -> None:
                             ">>> ALERT [%s] %s | %s",
                             alert.signal_type, alert.symbol, alert.message,
                         )
+                        save_alert(alert)
                         producer.send(
                             ALERTS_TOPIC,
                             value=serialize_alert(alert),
