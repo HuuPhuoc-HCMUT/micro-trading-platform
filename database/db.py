@@ -75,9 +75,22 @@ def init_db():
                 symbol TEXT,
                 severity TEXT,
                 message TEXT,
-                price REAL
+                price REAL,
+                direction TEXT,
+                score REAL,
+                confidence REAL
             )
         ''')
+        # Migration: thêm các cột mới nếu chưa có (DB cũ)
+        for col_sql in [
+            "ALTER TABLE alerts ADD COLUMN direction TEXT",
+            "ALTER TABLE alerts ADD COLUMN score REAL",
+            "ALTER TABLE alerts ADD COLUMN confidence REAL",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Cột đã tồn tại
 
         conn.commit()
         logger.info("🗄️ Database (SQLite) đã được khởi tạo thành công. Sẵn sàng lưu sổ sách!")
@@ -129,7 +142,13 @@ def save_alert(alert) -> None:
         cursor = conn.cursor()
         ts = alert.triggered_at.isoformat() if isinstance(alert.triggered_at, datetime) else alert.triggered_at
         cursor.execute('''
-            INSERT INTO alerts (triggered_at, signal_type, symbol, severity, message, price)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (ts, alert.signal_type, alert.symbol, alert.severity, alert.message, alert.price))
+            INSERT INTO alerts (triggered_at, signal_type, symbol, severity, message, price, direction, score, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            ts, alert.signal_type, alert.symbol, alert.severity, alert.message,
+            getattr(alert, 'price', 0.0),
+            getattr(alert, 'direction', None),
+            getattr(alert, 'score', 0.0),
+            getattr(alert, 'confidence', 0.0),
+        ))
         conn.commit()
