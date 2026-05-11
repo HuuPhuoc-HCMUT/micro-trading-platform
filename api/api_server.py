@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime
 import sqlite3
 from pathlib import Path
@@ -5,7 +6,17 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from database.db import init_db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Micro Trading API",
     description="API cung cấp dữ liệu cho Dashboard giao dịch",
     version="1.0.0"
@@ -159,6 +170,15 @@ def get_focus(symbol: str | None = None):
     else:
         trend_arrow, trend_label = "→", "Flat"
 
+    # Lấy tín hiệu mới nhất để lấy edge / confidence
+    latest_alert = query_db(
+        "SELECT score, confidence, direction FROM alerts WHERE symbol = ? ORDER BY triggered_at DESC LIMIT 1",
+        (target,),
+        one=True
+    )
+    edge = latest_alert['score'] if latest_alert else 0.0
+    confidence = latest_alert['confidence'] if latest_alert else 0.0
+
     return {
         "symbol": target,
         "source": "simulator",
@@ -166,8 +186,8 @@ def get_focus(symbol: str | None = None):
         "change": change,
         "trend_arrow": trend_arrow,
         "trend_label": trend_label,
-        "edge": 0.0,
-        "confidence": 0.0,
+        "edge": edge,
+        "confidence": confidence,
         "unrealized": 0.0,
         "position_qty": 0.0,
     }
@@ -211,6 +231,16 @@ def get_state():
         """
     )
 
+    # Lấy tín hiệu mới nhất mỗi symbol để hiển thị action / edge
+    alert_rows = query_db(
+        """
+        SELECT symbol, direction, score, confidence
+        FROM alerts
+        WHERE triggered_at IN (SELECT MAX(triggered_at) FROM alerts GROUP BY symbol)
+        """
+    )
+    alert_map = {a['symbol']: a for a in alert_rows}
+
     rows = []
     for r in symbol_rows:
         change = r.get('change') or 0.0
@@ -220,6 +250,7 @@ def get_state():
             trend_arrow, trend_label = "↓", "Down"
         else:
             trend_arrow, trend_label = "→", "Flat"
+        alert = alert_map.get(r['symbol'], {})
         rows.append({
             "symbol": r['symbol'],
             "source": "simulator",
@@ -228,6 +259,9 @@ def get_state():
             "change": change,
             "trend_arrow": trend_arrow,
             "trend_label": trend_label,
+            "action": alert.get('direction') or 'HOLD',
+            "edge": alert.get('score') or 0.0,
+            "confidence": alert.get('confidence') or 0.0,
         })
 
     # Đặt focus_symbol mặc định nếu chưa có

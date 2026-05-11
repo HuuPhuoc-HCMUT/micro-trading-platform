@@ -187,7 +187,21 @@
       .symbol-grid {
         display: grid;
         gap: 12px;
+        max-height: 480px;
+        overflow-y: auto;
       }
+
+      .btn-refresh {
+        padding: 6px 14px;
+        border-radius: 999px;
+        background: rgba(56,189,248,0.12);
+        border: 1px solid rgba(56,189,248,0.3);
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s ease;
+      }
+      .btn-refresh:hover { background: rgba(56,189,248,0.22); }
 
       .symbol-card {
         width: 100%;
@@ -345,14 +359,15 @@
           <div class="eyebrow">Realtime Trading Monitor</div>
           <h1>Micro Trading Dashboard</h1>
           <p class="hero-copy">
-            Giao diện web được làm lại từ logic terminal dashboard đềEtheo dõi
-            portfolio, tín hiệu, nến giá và lịch sử lệnh trong một màn hình dềEđọc hơn.
+            Giao diện web được làm lại từ logic terminal dashboard để theo dõi
+            portfolio, tín hiệu, nến giá và lịch sử lệnh trong một màn hình dễ đọc hơn.
           </p>
           <div class="hero-meta">
             <div class="pill">Focus: <strong id="focus-pill">Đang tải...</strong></div>
             <div class="pill">Source: <strong id="source-pill">Đang tải...</strong></div>
             <div class="pill">Ticks: <strong id="tick-pill">0</strong></div>
-            <div class="pill">Refresh: <strong>1 giây</strong></div>
+            <div class="pill">Cập nhật: <strong id="updated-pill">-</strong></div>
+            <button class="btn-refresh" id="refresh-btn" onclick="refreshDashboard()">&#x21BB; Làm mới</button>
           </div>
         </article>
 
@@ -360,12 +375,12 @@
           <article class="panel stat-card">
             <div class="stat-label">Balance</div>
             <div id="balance" class="stat-value">Đang tải...</div>
-            <div class="stat-sub">SềEdư khả dụng hiện tại</div>
+            <div class="stat-sub">Số dư khả dụng hiện tại</div>
           </article>
           <article class="panel stat-card">
             <div class="stat-label">Equity</div>
             <div id="equity" class="stat-value">Đang tải...</div>
-            <div class="stat-sub">Giá trềEtài khoản gồm vềEthế mềE/div>
+            <div class="stat-sub">Giá trị tài khoản gồm vị thế mở</div>
           </article>
           <article class="panel stat-card">
             <div class="stat-label">Realized / Unrealized PnL</div>
@@ -379,7 +394,7 @@
         <section class="panel section">
           <div class="section-head">
             <div>
-              <div class="section-title">Biểu đềEnến</div>
+              <div class="section-title">Biểu đồ nến</div>
               <div class="section-note" id="chart-note">Đang tải dữ liệu nến...</div>
             </div>
             <div class="section-actions">
@@ -396,11 +411,11 @@
           <div class="section-head">
             <div>
               <div class="section-title">Danh sách symbol</div>
-              <div class="section-note">Bấm vào một symbol đềEđổi focus chart</div>
+              <div class="section-note">Bấm vào một symbol để đổi focus chart</div>
             </div>
           </div>
           <div id="symbol-grid" class="symbol-grid">
-            <div class="empty">Đang tải thềEtrường...</div>
+            <div class="empty">Đang tải thị trường...</div>
           </div>
         </aside>
 
@@ -408,7 +423,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Lịch sử lệnh</div>
-              <div class="section-note">Các lệnh gần nhất toàn hềEthống</div>
+              <div class="section-note">Các lệnh gần nhất toàn hệ thống</div>
             </div>
           </div>
           <div class="table-wrap">
@@ -425,7 +440,7 @@
                 </tr>
               </thead>
               <tbody id="order-table-body">
-                <tr><td colspan="7" class="empty">Đang chềEdữ liệu...</td></tr>
+                <tr><td colspan="7" class="empty">Đang chờ dữ liệu...</td></tr>
               </tbody>
             </table>
           </div>
@@ -447,7 +462,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Chi tiết symbol đang chọn</div>
-              <div class="section-note" id="focus-detail-note">Chọn một symbol đềExem chi tiết nến và giao dịch</div>
+              <div class="section-note" id="focus-detail-note">Chọn một symbol để xem chi tiết nến và giao dịch</div>
             </div>
           </div>
           <div class="detail-grid">
@@ -501,6 +516,9 @@
       const API_BASE_URL = `${window.location.origin}/api`;
       let currentFocusSymbol = null;
       let latestRows = [];
+      let _refreshing = false;
+      let _lastSymbolKey = "";
+      let _lastUpdated = null;
 
       const chart = LightweightCharts.createChart(document.getElementById("tvchart"), {
         layout: {
@@ -541,8 +559,11 @@
 
       function formatSignedMoney(value) {
         const amount = Number(value || 0);
-        const sign = amount > 0 ? "+" : "";
-        return `${sign}${formatMoney(amount)}`;
+        const abs = Math.abs(amount);
+        const formatted = `$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        if (amount > 0) return `+${formatted}`;
+        if (amount < 0) return `-${formatted}`;
+        return formatted;
       }
 
       function toneClass(value) {
@@ -698,7 +719,6 @@
         if (!symbol) return;
         await fetchJson(`${API_BASE_URL}/focus?symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
         currentFocusSymbol = symbol;
-        await updateChart();
       }
 
       function renderSymbolSelect(rows, focusSymbol) {
@@ -717,11 +737,23 @@
 
       function renderSymbols(rows, focusSymbol) {
         const container = document.getElementById("symbol-grid");
+        const newKey = JSON.stringify(rows.map(r => `${r.symbol}|${r.close}|${r.action}|${r.trend_arrow}`));
 
         if (!rows.length) {
-          container.innerHTML = '<div class="empty">Không có symbol nào đềEhiển thềE</div>';
+          container.innerHTML = '<div class="empty">Không có symbol nào để hiển thị</div>';
+          _lastSymbolKey = "";
           return;
         }
+
+        // Only rebuild DOM when data actually changed to prevent hover flicker
+        if (newKey === _lastSymbolKey) {
+          // Just update active class without rebuilding
+          container.querySelectorAll(".symbol-card").forEach(card => {
+            card.classList.toggle("active", card.dataset.symbol === focusSymbol);
+          });
+          return;
+        }
+        _lastSymbolKey = newKey;
 
         container.innerHTML = rows
           .map((row) => {
@@ -772,16 +804,30 @@
         document.getElementById("focus-pill").textContent = state.focus_symbol || "-";
         document.getElementById("source-pill").textContent = (state.sources || []).join(", ") || "-";
         document.getElementById("tick-pill").textContent = state.tick_count ?? 0;
+
+        _lastUpdated = new Date();
+        document.getElementById("updated-pill").textContent = "0s ago";
       }
 
       async function refreshDashboard() {
-        const state = await fetchJson(`${API_BASE_URL}/state`);
-        currentFocusSymbol = state.focus_symbol || currentFocusSymbol;
-        latestRows = state.rows || [];
-        renderSummary(state);
-        renderSymbolSelect(latestRows, currentFocusSymbol);
-        renderSymbols(latestRows, currentFocusSymbol);
-        await Promise.all([updateChart(), updateOrders(), updateSignals(), updateFocusDetails()]);
+        if (_refreshing) return;
+        _refreshing = true;
+        document.getElementById("refresh-btn").textContent = "↻";
+        try {
+          const state = await fetchJson(`${API_BASE_URL}/state`);
+          currentFocusSymbol = state.focus_symbol || currentFocusSymbol;
+          latestRows = state.rows || [];
+          renderSummary(state);
+          renderSymbolSelect(latestRows, currentFocusSymbol);
+          renderSymbols(latestRows, currentFocusSymbol);
+          await Promise.all([updateChart(), updateOrders(), updateSignals(), updateFocusDetails()]);
+        } catch (err) {
+          console.error("Dashboard refresh failed:", err);
+          document.getElementById("updated-pill").textContent = "Error";
+        } finally {
+          _refreshing = false;
+          document.getElementById("refresh-btn").textContent = "↻";
+        }
       }
 
       document.getElementById("symbol-select").addEventListener("change", async (event) => {
@@ -794,6 +840,14 @@
 
       refreshDashboard();
       setInterval(refreshDashboard, 1000);
+
+      // Tick the "Xs ago" staleness indicator every second
+      setInterval(() => {
+        if (!_lastUpdated) return;
+        const secs = Math.round((Date.now() - _lastUpdated.getTime()) / 1000);
+        const pill = document.getElementById("updated-pill");
+        if (pill) pill.textContent = `${secs}s ago`;
+      }, 1000);
 
       window.addEventListener("resize", () => {
         chart.applyOptions({
