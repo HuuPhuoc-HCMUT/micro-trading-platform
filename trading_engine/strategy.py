@@ -17,7 +17,7 @@ class RuleBasedStrategy:
         order_manager: OrderManager,
         max_balance_risk: float = 0.18,
         min_trade_notional: float = 25.0,
-        allow_short: bool = True,
+        allow_short: bool = False,
     ) -> None:
         self.order_manager = order_manager
         # Base trading quantities (Khối lượng vào lệnh cơ bản)
@@ -133,7 +133,7 @@ class RuleBasedStrategy:
             "action": action,
         }
 
-    def execute(self, alerts: list[Alert], event: PriceEvent) -> None:
+    def execute(self, alerts: list[Alert], event: PriceEvent, current_step: int | None = None) -> None:
         """Evaluate CEP alerts with probability-aware position sizing."""
         if not alerts:
             return  # No signals, do nothing
@@ -185,7 +185,16 @@ class RuleBasedStrategy:
                 actual_qty,
             )
             if actual_qty * event.price >= self.min_trade_notional:
-                self.order_manager.execute_order("BUY", symbol, actual_qty, event.price)
+                self.order_manager.execute_order(
+                    "BUY",
+                    symbol,
+                    actual_qty,
+                    event.price,
+                    timestamp=event.timestamp,
+                    reason="ENTRY_OR_COVER",
+                    current_step=current_step,
+                    reference_price=event.open,
+                )
                 order_executed = True
 
         elif delta_notional < 0:
@@ -200,7 +209,16 @@ class RuleBasedStrategy:
                 actual_qty,
             )
             if actual_qty * event.price >= self.min_trade_notional:
-                self.order_manager.execute_order("SELL", symbol, actual_qty, event.price)
+                self.order_manager.execute_order(
+                    "SELL",
+                    symbol,
+                    actual_qty,
+                    event.price,
+                    timestamp=event.timestamp,
+                    reason="SIGNAL_EXIT_OR_SHORT",
+                    current_step=current_step,
+                    reference_price=event.open,
+                )
                 order_executed = True
 
         else:

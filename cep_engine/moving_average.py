@@ -21,9 +21,15 @@ class MovingAverageDetector:
         long_window: Number of periods for the long (slow) MA.
     """
 
-    def __init__(self, short_window: int = 5, long_window: int = 20) -> None:
+    def __init__(
+        self,
+        short_window: int = 5,
+        long_window: int = 20,
+        transaction_cost_bps: float = 12.0,
+    ) -> None:
         self.short_window = short_window
         self.long_window = long_window
+        self.transaction_cost = transaction_cost_bps / 10_000.0
         self.prices: dict[str, list[float]] = {}
         self.prev_short_ma: dict[str, float | None] = {}
         self.prev_long_ma: dict[str, float | None] = {}
@@ -74,7 +80,8 @@ class MovingAverageDetector:
         recent_prices = self.prices[symbol][-self.long_window:]
         volatility = pstdev(recent_prices) / long_ma if len(recent_prices) > 1 and long_ma else 0.0
         spread_ratio = (short_ma - long_ma) / long_ma if long_ma else 0.0
-        confidence = min(0.95, 0.5 + abs(spread_ratio) / max(volatility, 0.002) * 0.08)
+        long_slope = ((long_ma - prev_long) / prev_long) if prev_long else 0.0
+        trend_strength = abs(spread_ratio) / max(volatility, self.transaction_cost * 2, 0.002)
 
         # Update state before returning
         self.prev_short_ma[symbol] = short_ma
@@ -86,6 +93,11 @@ class MovingAverageDetector:
 
         # Golden cross: short was below long, now short is above long
         if prev_short <= prev_long and short_ma > long_ma:
+            gross_expected = 0.55 * spread_ratio + 0.45 * max(long_slope, 0.0)
+            expected_return = max(gross_expected - self.transaction_cost, 0.0)
+            if expected_return == 0.0:
+                return None
+            confidence = min(0.95, 0.52 + trend_strength * 0.08 + max(long_slope, 0.0) / max(volatility, 0.002) * 0.05)
             return Alert(
                 signal_type="MA_CROSSOVER",
                 symbol=symbol,
@@ -97,18 +109,25 @@ class MovingAverageDetector:
                 triggered_at=datetime.now(timezone.utc),
                 direction="BUY",
                 confidence=confidence,
-                score=math.tanh(abs(spread_ratio) / max(volatility, 0.002)),
-                expected_return=max(spread_ratio, 0.0),
+                score=math.tanh(expected_return / max(volatility, self.transaction_cost * 2, 0.002)),
+                expected_return=expected_return,
                 metadata={
                     "short_ma": round(short_ma, 6),
                     "long_ma": round(long_ma, 6),
                     "spread_ratio": round(spread_ratio, 6),
+                    "long_slope": round(long_slope, 6),
                     "volatility": round(volatility, 6),
+                    "transaction_cost": round(self.transaction_cost, 6),
                 },
             )
 
         # Death cross: short was above long, now short is below long
         if prev_short >= prev_long and short_ma < long_ma:
+            gross_expected = 0.55 * spread_ratio + 0.45 * min(long_slope, 0.0)
+            expected_return = -max(abs(gross_expected) - self.transaction_cost, 0.0)
+            if expected_return == 0.0:
+                return None
+            confidence = min(0.95, 0.52 + trend_strength * 0.08 + abs(min(long_slope, 0.0)) / max(volatility, 0.002) * 0.05)
             return Alert(
                 signal_type="MA_CROSSOVER",
                 symbol=symbol,
@@ -120,13 +139,15 @@ class MovingAverageDetector:
                 triggered_at=datetime.now(timezone.utc),
                 direction="SELL",
                 confidence=confidence,
-                score=-math.tanh(abs(spread_ratio) / max(volatility, 0.002)),
-                expected_return=min(spread_ratio, 0.0),
+                score=-math.tanh(abs(expected_return) / max(volatility, self.transaction_cost * 2, 0.002)),
+                expected_return=expected_return,
                 metadata={
                     "short_ma": round(short_ma, 6),
                     "long_ma": round(long_ma, 6),
                     "spread_ratio": round(spread_ratio, 6),
+                    "long_slope": round(long_slope, 6),
                     "volatility": round(volatility, 6),
+                    "transaction_cost": round(self.transaction_cost, 6),
                 },
             )
 

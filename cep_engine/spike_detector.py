@@ -11,9 +11,17 @@ logger = logging.getLogger(__name__)
 class SpikeDetector:
     """Detects sudden price spikes or dumps over a short window."""
 
-    def __init__(self, threshold_percent: float = 2.0, window_size: int = 5) -> None:
+    def __init__(
+        self,
+        threshold_percent: float = 2.0,
+        window_size: int = 5,
+        transaction_cost_bps: float = 12.0,
+        max_shock_zscore: float = 6.0,
+    ) -> None:
         self.threshold_percent = threshold_percent
         self.window_size = window_size
+        self.transaction_cost = transaction_cost_bps / 10_000.0
+        self.max_shock_zscore = max_shock_zscore
         self.history: dict[str, list[float]] = {}
         self.return_history: dict[str, list[float]] = {}
 
@@ -47,7 +55,28 @@ class SpikeDetector:
             if abs(change_percent) >= self.threshold_percent:
                 direction = "UP" if change_percent > 0 else "DOWN"
                 trade_direction = "BUY" if change_percent > 0 else "SELL"
-                confidence = min(0.99, 0.55 + abs(change_percent) / (self.threshold_percent * 4))
+                signed_return = change_percent / 100.0
+                shock_penalty = min(abs(shock) / self.max_shock_zscore, 0.85) if shock else 0.0
+                continuation_quality = 1.0 - shock_penalty
+                expected_return = math.copysign(
+                    max(abs(signed_return) * 0.35 * continuation_quality - self.transaction_cost, 0.0),
+                    signed_return,
+                )
+
+                if expected_return == 0.0:
+                    return None
+
+                confidence = min(
+                    0.99,
+                    0.52
+                    + abs(change_percent) / (self.threshold_percent * 6)
+                    + continuation_quality * 0.12,
+                )
+                score = (
+                    math.tanh(abs(signed_return) / max(self.threshold_percent / 100.0, 1e-9))
+                    * continuation_quality
+                    * (1 if change_percent > 0 else -1)
+                )
 
                 return Alert(
                     signal_type="SPIKE_DETECTED",
@@ -60,11 +89,13 @@ class SpikeDetector:
                     triggered_at=datetime.now(timezone.utc),
                     direction=trade_direction,
                     confidence=confidence,
-                    score=math.tanh(abs(change_percent) / self.threshold_percent) * (1 if change_percent > 0 else -1),
-                    expected_return=change_percent / 100.0,
+                    score=score,
+                    expected_return=expected_return,
                     metadata={
                         "change_percent": round(change_percent, 6),
                         "shock_zscore": round(shock, 6),
+                        "continuation_quality": round(continuation_quality, 6),
+                        "transaction_cost": round(self.transaction_cost, 6),
                         "window_size": self.window_size,
                     },
                 )

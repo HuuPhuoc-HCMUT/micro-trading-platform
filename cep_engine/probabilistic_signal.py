@@ -30,12 +30,16 @@ class ProbabilisticSignalDetector:
         learning_rate: float = 0.08,
         l2_penalty: float = 0.002,
         signal_threshold: float = 0.18,
+        transaction_cost_bps: float = 12.0,
+        min_net_expected_return: float = 0.0004,
     ) -> None:
         self.window_size = window_size
         self.min_history = min_history
         self.learning_rate = learning_rate
         self.l2_penalty = l2_penalty
         self.signal_threshold = signal_threshold
+        self.transaction_cost = transaction_cost_bps / 10_000.0
+        self.min_net_expected_return = min_net_expected_return
         self.state: dict[str, SymbolState] = {}
 
     def _sigmoid(self, value: float) -> float:
@@ -60,6 +64,10 @@ class ProbabilisticSignalDetector:
             return
 
         realized_return = (current_price - state.prev_price) / state.prev_price
+        if abs(realized_return) <= self.transaction_cost * 0.5:
+            state.prev_price = current_price
+            return
+
         label = 1.0 if realized_return > 0 else 0.0
 
         logit = sum(weight * feature for weight, feature in zip(state.weights, state.prev_features))
@@ -163,15 +171,21 @@ class ProbabilisticSignalDetector:
         ml_logit = sum(weight * feature for weight, feature in zip(state.weights, features))
         ml_probability = self._sigmoid(ml_logit)
 
+        volume_confirmation = diagnostics["volume_zscore"] * (
+            diagnostics["short_momentum"] / max(diagnostics["realized_volatility"], 0.002)
+        )
+        downside_ratio = diagnostics["downside_volatility"] / max(diagnostics["realized_volatility"], 0.002)
+
         stat_score = (
-            0.90 * diagnostics["risk_adjusted_trend"]
-            + 0.55 * (diagnostics["short_momentum"] / max(diagnostics["realized_volatility"], 0.002))
-            + 0.35 * (diagnostics["medium_momentum"] / max(diagnostics["realized_volatility"], 0.002))
-            + 0.30 * diagnostics["volume_zscore"]
-            - 0.55 * diagnostics["price_zscore"]
-            - 0.40 * (diagnostics["downside_volatility"] / max(diagnostics["realized_volatility"], 0.002))
-            + 0.20 * diagnostics["range_position"]
-            - 0.15 * diagnostics["return_zscore"]
+            0.80 * diagnostics["risk_adjusted_trend"]
+            + 0.45 * (diagnostics["short_momentum"] / max(diagnostics["realized_volatility"], 0.002))
+            + 0.30 * (diagnostics["medium_momentum"] / max(diagnostics["realized_volatility"], 0.002))
+            + 0.18 * volume_confirmation
+            - 0.35 * max(diagnostics["price_zscore"], 0.0)
+            + 0.15 * max(-diagnostics["price_zscore"], 0.0)
+            - 0.35 * downside_ratio
+            + 0.12 * diagnostics["range_position"]
+            - 0.10 * diagnostics["return_zscore"]
         )
         stat_probability = self._sigmoid(stat_score)
 
@@ -184,7 +198,7 @@ class ProbabilisticSignalDetector:
         up_probability = self._sigmoid((0.25 + 0.75 * sample_confidence) * ensemble_logit)
         down_probability = 1.0 - up_probability
 
-        expected_return = (
+        gross_expected_return = (
             0.35 * diagnostics["short_momentum"]
             + 0.25 * diagnostics["medium_momentum"]
             + 0.18 * diagnostics["trend_consistency"]
@@ -194,13 +208,17 @@ class ProbabilisticSignalDetector:
             - 0.18 * diagnostics["downside_volatility"]
             - 0.06 * diagnostics["return_zscore"] * max(diagnostics["realized_volatility"], 0.002)
         )
+        expected_return = math.copysign(
+            max(abs(gross_expected_return) - self.transaction_cost, 0.0),
+            gross_expected_return,
+        )
 
         volatility_floor = max(diagnostics["realized_volatility"], 0.002)
         normalized_edge = (
             0.50 * (up_probability - down_probability)
             + 0.25 * self._bounded(expected_return, volatility_floor)
             + 0.15 * self._bounded(diagnostics["risk_adjusted_trend"], 1.5)
-            - 0.10 * self._bounded(diagnostics["downside_volatility"], volatility_floor)
+            - 0.10 * self._bounded(downside_ratio, 1.0)
         )
 
         state.prev_features = features
@@ -209,7 +227,15 @@ class ProbabilisticSignalDetector:
         if abs(normalized_edge) < self.signal_threshold:
             return None
 
+        if abs(expected_return) < self.min_net_expected_return:
+            return None
+
         direction = "BUY" if normalized_edge > 0 else "SELL"
+        if expected_return > 0 and direction == "SELL":
+            return None
+        if expected_return < 0 and direction == "BUY":
+            return None
+
         confidence = min(0.99, 0.5 + abs(normalized_edge) / 2.0)
         severity = "HIGH" if confidence >= 0.75 else "MEDIUM"
 
@@ -219,7 +245,7 @@ class ProbabilisticSignalDetector:
             severity=severity,
             message=(
                 f"{direction} edge detected: p_up={up_probability:.2%}, "
-                f"expected_return={expected_return:.4%}, vol={diagnostics['realized_volatility']:.4%}, "
+                f"net_expected_return={expected_return:.4%}, vol={diagnostics['realized_volatility']:.4%}, "
                 f"downside_vol={diagnostics['downside_volatility']:.4%}"
             ),
             triggered_at=datetime.now(timezone.utc),
@@ -238,9 +264,12 @@ class ProbabilisticSignalDetector:
                 "volume_zscore": round(diagnostics["volume_zscore"], 6),
                 "realized_volatility": round(diagnostics["realized_volatility"], 6),
                 "downside_volatility": round(diagnostics["downside_volatility"], 6),
+                "downside_ratio": round(downside_ratio, 6),
                 "trend_consistency": round(diagnostics["trend_consistency"], 6),
                 "range_position": round(diagnostics["range_position"], 6),
                 "risk_adjusted_trend": round(diagnostics["risk_adjusted_trend"], 6),
                 "return_zscore": round(diagnostics["return_zscore"], 6),
+                "gross_expected_return": round(gross_expected_return, 6),
+                "transaction_cost": round(self.transaction_cost, 6),
             },
         )
