@@ -104,9 +104,9 @@ def save_order(order: Order):
         ts = order.timestamp.isoformat() if isinstance(order.timestamp, datetime) else order.timestamp
         
         cursor.execute('''
-            INSERT INTO orders (timestamp, symbol, side, price, quantity, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (ts, order.symbol, order.side, order.price, order.quantity, order.status))
+            INSERT INTO orders (timestamp, symbol, side, price, quantity, status, trade_pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, order.symbol, order.side, order.price, order.quantity, order.status, order.trade_pnl))
         conn.commit()
 
 def save_balance(balance_usdt: float, realized_pnl: float):

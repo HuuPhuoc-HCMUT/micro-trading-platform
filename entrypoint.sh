@@ -45,21 +45,53 @@ echo "  Kafka is up."
 # ---------------------------------------------------------------------------
 # Step 2: DB migration
 # ---------------------------------------------------------------------------
-echo "[2/5] Running DB migration..."
+echo "[2/6] Running DB migration..."
 python -c "from database.db import init_db; init_db(); print('  DB ready.')"
 
 # ---------------------------------------------------------------------------
-# Step 3: Start Kafka workers as background processes
+# Step 3: Pre-create Kafka topics with 3 partitions each
 # ---------------------------------------------------------------------------
-echo "[3/5] Starting kafka-cep worker..."
+echo "[3/6] Creating Kafka topics (3 partitions each)..."
+python -c "
+from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.errors import TopicAlreadyExistsError
+client = KafkaAdminClient(bootstrap_servers='$KAFKA_BOOTSTRAP_SERVERS')
+topics = [
+    NewTopic(name='market.price_events', num_partitions=3, replication_factor=1),
+    NewTopic(name='market.alerts',       num_partitions=3, replication_factor=1),
+    NewTopic(name='market.orders',       num_partitions=3, replication_factor=1),
+]
+try:
+    client.create_topics(topics)
+    print('  Topics created.')
+except TopicAlreadyExistsError:
+    print('  Topics already exist.')
+except Exception as e:
+    print(f'  Topic warning: {e}')
+finally:
+    client.close()
+"
+
+# ---------------------------------------------------------------------------
+# Step 4: Start Kafka workers as background processes
+# ---------------------------------------------------------------------------
+echo "[4/6] Starting kafka-cep worker..."
 python main.py --mode kafka-cep &
 CEP_PID=$!
 
-echo "[4/5] Starting kafka-strategy worker..."
+echo "[5/6] Starting kafka-strategy workers (3 instances, group=strategy-group)..."
 python main.py --mode kafka-strategy &
-STRATEGY_PID=$!
+STRATEGY1_PID=$!
+python main.py --mode kafka-strategy &
+STRATEGY2_PID=$!
+python main.py --mode kafka-strategy &
+STRATEGY3_PID=$!
 
-echo "[5/5] Starting kafka-publisher ($SOURCE $SYMBOL)..."
+echo "[5/6] Starting kafka-db-writer..."
+python main.py --mode kafka-db-writer &
+DBWRITER_PID=$!
+
+echo "[6/6] Starting kafka-publisher ($SOURCE $SYMBOL)..."
 python main.py --mode kafka-publisher --source "$SOURCE" --symbol "$SYMBOL" &
 PUBLISHER_PID=$!
 
@@ -69,7 +101,13 @@ PUBLISHER_PID=$!
 monitor_workers() {
     while true; do
         sleep 10
-        for NAME_PID in "kafka-cep:$CEP_PID" "kafka-strategy:$STRATEGY_PID" "kafka-publisher:$PUBLISHER_PID"; do
+        for NAME_PID in \
+            "kafka-cep:$CEP_PID" \
+            "kafka-strategy-1:$STRATEGY1_PID" \
+            "kafka-strategy-2:$STRATEGY2_PID" \
+            "kafka-strategy-3:$STRATEGY3_PID" \
+            "kafka-db-writer:$DBWRITER_PID" \
+            "kafka-publisher:$PUBLISHER_PID"; do
             NAME="${NAME_PID%%:*}"
             PID="${NAME_PID##*:}"
             if ! kill -0 "$PID" 2>/dev/null; then
@@ -79,9 +117,12 @@ monitor_workers() {
                         python main.py --mode kafka-cep &
                         CEP_PID=$!
                         ;;
-                    kafka-strategy)
+                    kafka-strategy-1|kafka-strategy-2|kafka-strategy-3)
                         python main.py --mode kafka-strategy &
-                        STRATEGY_PID=$!
+                        ;;
+                    kafka-db-writer)
+                        python main.py --mode kafka-db-writer &
+                        DBWRITER_PID=$!
                         ;;
                     kafka-publisher)
                         python main.py --mode kafka-publisher --source "$SOURCE" --symbol "$SYMBOL" &

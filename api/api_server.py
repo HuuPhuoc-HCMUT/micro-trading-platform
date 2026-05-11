@@ -1,18 +1,69 @@
 from contextlib import asynccontextmanager
+import asyncio
 from datetime import datetime
+import os
 import sqlite3
 from pathlib import Path
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from database.db import init_db
+from streaming.kafka_consumer import KafkaEventConsumer
+from streaming.serializers import deserialize_price_event
+from streaming.topics import PRICE_EVENTS_TOPIC
+
+KAFKA_BOOTSTRAP_SERVERS: str = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
+# ---------------------------------------------------------------------------
+# SSE broadcaster: one background Kafka consumer pushes candles to all clients
+# ---------------------------------------------------------------------------
+_sse_clients: list[asyncio.Queue] = []
+_broadcaster_task: asyncio.Task | None = None
+
+
+async def _kafka_candle_broadcaster() -> None:
+    """Background task: poll price_events and fan out to all SSE queues."""
+    consumer = KafkaEventConsumer(
+        topics=[PRICE_EVENTS_TOPIC],
+        group_id="sse-broadcaster",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="latest",
+    )
+    consumer.connect()
+    loop = asyncio.get_event_loop()
+
+    def _poll() -> list[bytes]:
+        records = consumer._consumer.poll(timeout_ms=200)
+        return [msg.value for batch in records.values() for msg in batch]
+
+    try:
+        while True:
+            msgs = await loop.run_in_executor(None, _poll)
+            for raw in msgs:
+                try:
+                    event = deserialize_price_event(raw)
+                    payload = event.model_dump_json()
+                    for q in list(_sse_clients):
+                        q.put_nowait(payload)
+                except Exception:
+                    pass
+    except asyncio.CancelledError:
+        consumer.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _broadcaster_task
     init_db()
+    _broadcaster_task = asyncio.create_task(_kafka_candle_broadcaster())
     yield
+    if _broadcaster_task:
+        _broadcaster_task.cancel()
+        try:
+            await _broadcaster_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -280,3 +331,43 @@ def get_state():
         "tick_count": _tick_count,
         "rows": rows,
     }
+
+
+# ---------------------------------------------------------------------------
+# SSE — live candle stream
+# ---------------------------------------------------------------------------
+
+@app.get("/api/stream/candles", include_in_schema=True)
+async def stream_candles():
+    """Server-Sent Events stream of live PriceEvent candles from Kafka.
+
+    Clients subscribe once; each Kafka message is broadcast as an SSE frame::
+
+        data: {"symbol": "BTC/USDT", "price": 40123.45, ...}
+
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _sse_clients.append(queue)
+
+    async def generate():
+        try:
+            while True:
+                payload = await queue.get()
+                yield f"data: {payload}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                _sse_clients.remove(queue)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

@@ -158,6 +158,7 @@ def serialize_order(order: Order) -> bytes:
         "price": order.price,
         "status": order.status,
         "timestamp": _dt_to_str(order.timestamp),
+        "trade_pnl": order.trade_pnl,
     }
     return _to_bytes(payload)
 

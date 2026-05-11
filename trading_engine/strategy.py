@@ -120,7 +120,9 @@ class RuleBasedStrategy:
         expected_return = float(signal["expected_return"])
 
         action = "HOLD"
-        if abs(edge) >= 0.2 and abs(expected_return) >= 0.0005:
+        # Thresholds calibrated to PROBABILISTIC_ALPHA signal magnitudes:
+        # edge typically 0.15–0.45, expected_return typically 0.01–0.03% (0.0001–0.0003).
+        if abs(edge) >= 0.1 and abs(expected_return) >= 0.0001:
             if edge > 0:
                 action = "BUY"
             elif position.quantity > 0:
@@ -152,7 +154,7 @@ class RuleBasedStrategy:
         realized_volatility = float(signal["realized_volatility"])
         downside_volatility = float(signal["downside_volatility"])
 
-        if abs(edge) < 0.2 or abs(expected_return) < 0.0005:
+        if abs(edge) < 0.1 or abs(expected_return) < 0.0001:
             logger.info(
                 "⚪ STRATEGY: edge too small for %s | edge=%.3f expected=%.4f%% conf=%.2f",
                 symbol,

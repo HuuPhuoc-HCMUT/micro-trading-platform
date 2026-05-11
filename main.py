@@ -26,7 +26,7 @@ from data_source.coinbase_client import stream_trades as coinbase_stream
 from data_source.kraken_client import stream_trades as kraken_stream
 from data_source.time_aggregator import TimeAggregator # <--- THÊM DÒNG NÀY Ở ĐẦU FILE
 
-from database.db import init_db, save_candle, save_alert
+from database.db import init_db, save_candle, save_alert, save_order, save_balance
 
 from logger_config import setup_logging
 
@@ -301,7 +301,11 @@ def run_kafka_strategy_worker() -> None:
 
     init_db()
 
-    order_manager = OrderManager(initial_balance=10000.0)
+    # persist_to_db=False: OrderManager must NOT write directly to SQLite.
+    # All order persistence is handled exclusively by the Kafka db-writer worker
+    # consuming market.orders.  Without this, every order is written twice:
+    # once here and once by the db-writer.
+    order_manager = OrderManager(initial_balance=10000.0, persist_to_db=False)
     strategy = RuleBasedStrategy(order_manager)
 
     # Price cache: symbol → latest price (for unrealised P&L)
@@ -314,15 +318,21 @@ def run_kafka_strategy_worker() -> None:
     # When a new timestamp arrives we flush the old candle's alerts first.
     candle_ts_cache: dict[str, str] = {}
 
+    # Track how many orders have already been published to market.orders so that
+    # repeated _flush_symbol calls (triggered by VOLUME_ANOMALY etc.) do not
+    # re-publish the same FILLED order every time.
+    last_published_order_count: int = 0
+
     consumer = KafkaEventConsumer(
         topics=[ALERTS_TOPIC],
-        group_id="strategy-worker",
+        group_id="strategy-group",
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         auto_offset_reset="latest",
     )
 
     def _flush_symbol(symbol: str) -> None:
         """Run the strategy with all accumulated alerts for *symbol* and publish any order."""
+        nonlocal last_published_order_count
         pending = alert_buffer.pop(symbol, [])
         cached_price = price_cache.get(symbol, 0.0)
         if not pending or cached_price == 0.0:
@@ -335,14 +345,22 @@ def run_kafka_strategy_worker() -> None:
             source="kafka-strategy",
         )
         strategy.execute(pending, synthetic_event)
-        if order_manager.order_history:
-            latest_order = order_manager.order_history[-1]
-            if latest_order.status == "FILLED":
-                producer.send(
-                    ORDERS_TOPIC,
-                    value=serialize_order(latest_order),
-                    key=symbol,
-                )
+        current_count = len(order_manager.order_history)
+        if current_count > last_published_order_count:
+            # Only publish orders that were added since the last flush.
+            new_orders = order_manager.order_history[last_published_order_count:]
+            last_published_order_count = current_count
+            for new_order in new_orders:
+                if new_order.status == "FILLED":
+                    # Save balance here — only this worker has the OrderManager state.
+                    # save_order() is intentionally omitted; the db-writer handles it
+                    # via the market.orders Kafka topic.
+                    save_balance(order_manager.balance, order_manager.realized_pnl)
+                    producer.send(
+                        ORDERS_TOPIC,
+                        value=serialize_order(new_order),
+                        key=symbol,
+                    )
 
     with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
         for raw in consumer.consume():
@@ -374,6 +392,44 @@ def run_kafka_strategy_worker() -> None:
             alert_buffer.setdefault(symbol, []).append(alert)
 
 
+def run_kafka_db_writer() -> None:
+    """Kafka DB writer: the only process that writes orders to SQLite.
+
+    Consumes ``market.orders`` and persists each filled order via
+    :func:`database.db.save_order`.  Running exactly one instance of this
+    worker eliminates SQLite ``database is locked`` errors that would occur
+    if multiple strategy bots wrote concurrently.
+    """
+    logger.info(
+        "🗄️ KAFKA DB WRITER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    init_db()
+
+    consumer = KafkaEventConsumer(
+        topics=[ORDERS_TOPIC],
+        group_id="db-writer",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        # "latest": on fresh start (no committed offset), skip historical messages.
+        # Prevents replaying all past orders into the DB on every clean deploy.
+        # After the first run, Kafka commits offsets and restarts resume correctly.
+        auto_offset_reset="latest",
+    )
+
+    with consumer:
+        for raw in consumer.consume():
+            try:
+                order = deserialize_order(raw)
+                save_order(order)
+                logger.info(
+                    "DB WRITE: %s %s %.6f @ %.2f [%s]",
+                    order.side, order.symbol, order.quantity, order.price, order.status,
+                )
+            except Exception as exc:
+                logger.error("DB writer failed to persist order: %s", exc)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Micro Trading Platform")
     
@@ -383,7 +439,7 @@ def main() -> None:
         type=str,
         choices=[
             "publisher", "subscriber", "standalone",
-            "kafka-publisher", "kafka-cep", "kafka-strategy",
+            "kafka-publisher", "kafka-cep", "kafka-strategy", "kafka-db-writer",
         ],
         default="standalone",
         help=(
@@ -416,6 +472,10 @@ def main() -> None:
 
     if args.mode == "kafka-strategy":
         run_kafka_strategy_worker()
+        return
+
+    if args.mode == "kafka-db-writer":
+        run_kafka_db_writer()
         return
 
     # Khởi tạo Data Stream (dùng cho Publisher)
