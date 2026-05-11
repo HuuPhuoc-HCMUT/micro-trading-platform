@@ -223,9 +223,9 @@ def run_kafka_publisher(stream) -> None:
 def run_kafka_cep_worker() -> None:
     """Kafka CEP worker: consume PriceEvents and publish Alerts.
 
-    Subscribes to ``market.price_events``, runs all three CEP detectors
-    (Moving Average, Spike, Volume Anomaly) on each event, then publishes
-    any resulting :class:`Alert` objects to ``market.alerts``.
+    Subscribes to ``market.price_events``, runs all four CEP detectors
+    (Moving Average, Spike, Volume Anomaly, Probabilistic) on each event,
+    then publishes any resulting :class:`Alert` objects to ``market.alerts``.
     """
     logger.info(
         "🔬 KAFKA CEP WORKER starting — broker=%s",
@@ -237,6 +237,12 @@ def run_kafka_cep_worker() -> None:
     ma_detector = MovingAverageDetector(short_window=15, long_window=60)
     spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
     volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
+    probabilistic_detector = ProbabilisticSignalDetector(
+        window_size=60,
+        min_history=20,
+        learning_rate=0.06,
+        signal_threshold=0.20,
+    )
 
     consumer = KafkaEventConsumer(
         topics=[PRICE_EVENTS_TOPIC],
@@ -255,7 +261,7 @@ def run_kafka_cep_worker() -> None:
 
             save_candle(event)
 
-            detectors = [ma_detector, spike_detector, volume_detector]
+            detectors = [ma_detector, spike_detector, volume_detector, probabilistic_detector]
             for detector in detectors:
                 try:
                     alert = detector.process(event)
@@ -301,8 +307,12 @@ def run_kafka_strategy_worker() -> None:
     # Price cache: symbol → latest price (for unrealised P&L)
     price_cache: dict[str, float] = {}
 
-    # Alert accumulation buffer: symbol → list of Alerts received this cycle
+    # Alert accumulation buffer: symbol → list of Alerts for the current candle
     alert_buffer: dict[str, list] = {}
+
+    # Track the candle timestamp we are currently accumulating for each symbol.
+    # When a new timestamp arrives we flush the old candle's alerts first.
+    candle_ts_cache: dict[str, str] = {}
 
     consumer = KafkaEventConsumer(
         topics=[ALERTS_TOPIC],
@@ -310,6 +320,29 @@ def run_kafka_strategy_worker() -> None:
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         auto_offset_reset="latest",
     )
+
+    def _flush_symbol(symbol: str) -> None:
+        """Run the strategy with all accumulated alerts for *symbol* and publish any order."""
+        pending = alert_buffer.pop(symbol, [])
+        cached_price = price_cache.get(symbol, 0.0)
+        if not pending or cached_price == 0.0:
+            return
+        synthetic_event = PriceEvent(
+            symbol=symbol,
+            price=cached_price,
+            volume=0.0,
+            timestamp=pending[-1].triggered_at,
+            source="kafka-strategy",
+        )
+        strategy.execute(pending, synthetic_event)
+        if order_manager.order_history:
+            latest_order = order_manager.order_history[-1]
+            if latest_order.status == "FILLED":
+                producer.send(
+                    ORDERS_TOPIC,
+                    value=serialize_order(latest_order),
+                    key=symbol,
+                )
 
     with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
         for raw in consumer.consume():
@@ -320,40 +353,25 @@ def run_kafka_strategy_worker() -> None:
                 continue
 
             symbol = alert.symbol
-            alert_buffer.setdefault(symbol, []).append(alert)
 
             # Use the price embedded directly in the alert
             if alert.price > 0.0:
                 price_cache[symbol] = alert.price
 
-            cached_price = price_cache.get(symbol, 0.0)
-
-            if cached_price == 0.0:
-                # Not enough info yet — wait for a price-bearing alert
-                continue
-
-            from models.price_event import PriceEvent as _PE
-            synthetic_event = _PE(
-                symbol=symbol,
-                price=cached_price,
-                volume=0.0,
-                timestamp=alert.triggered_at,
-                source="kafka-strategy",
+            # Determine this alert's candle timestamp
+            alert_ts = (
+                alert.triggered_at.isoformat()
+                if hasattr(alert.triggered_at, "isoformat")
+                else str(alert.triggered_at)
             )
 
-            # Run strategy with accumulated alerts for this symbol
-            pending_alerts = alert_buffer.pop(symbol, [])
-            strategy.execute(pending_alerts, synthetic_event)
+            # When a new candle arrives for this symbol, flush the previous one first
+            prev_ts = candle_ts_cache.get(symbol)
+            if prev_ts is not None and prev_ts != alert_ts:
+                _flush_symbol(symbol)
 
-            # Publish the latest filled order (if any) to market.orders
-            if order_manager.order_history:
-                latest_order = order_manager.order_history[-1]
-                if latest_order.status == "FILLED":
-                    producer.send(
-                        ORDERS_TOPIC,
-                        value=serialize_order(latest_order),
-                        key=symbol,
-                    )
+            candle_ts_cache[symbol] = alert_ts
+            alert_buffer.setdefault(symbol, []).append(alert)
 
 
 def main() -> None:

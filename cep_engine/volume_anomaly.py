@@ -45,7 +45,7 @@ class VolumeAnomalyDetector:
                         f"Volume anomaly! Current: {event.volume:.4f} is "
                         f"{event.volume / avg_volume:.1f}x the average ({avg_volume:.4f})"
                     ),
-                    triggered_at=datetime.now(timezone.utc),
+                    triggered_at=event.timestamp,
                     price=event.price,
                     confidence=min(0.98, 0.5 + min(event.volume / avg_volume, 6.0) / 12.0),
                     score=math.tanh((event.volume / avg_volume) - 1.0),

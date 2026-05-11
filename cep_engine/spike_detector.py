@@ -59,7 +59,7 @@ class SpikeDetector:
                         f"Price spike {direction}: {change_percent:.2f}% "
                         f"over last {self.window_size} ticks. Current: ${current_price:.2f}"
                     ),
-                    triggered_at=datetime.now(timezone.utc),
+                    triggered_at=event.timestamp,
                     price=current_price,
                     direction=trade_direction,
                     confidence=confidence,

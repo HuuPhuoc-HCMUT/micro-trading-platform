@@ -96,7 +96,7 @@ class MovingAverageDetector:
                     f"Golden cross: SMA({self.short_window})={short_ma:.2f} "
                     f"crossed above SMA({self.long_window})={long_ma:.2f}"
                 ),
-                triggered_at=datetime.now(timezone.utc),
+                triggered_at=event.timestamp,
                 price=event.price,
                 direction="BUY",
                 confidence=confidence,
@@ -120,7 +120,7 @@ class MovingAverageDetector:
                     f"Death cross: SMA({self.short_window})={short_ma:.2f} "
                     f"crossed below SMA({self.long_window})={long_ma:.2f}"
                 ),
-                triggered_at=datetime.now(timezone.utc),
+                triggered_at=event.timestamp,
                 price=event.price,
                 direction="SELL",
                 confidence=confidence,

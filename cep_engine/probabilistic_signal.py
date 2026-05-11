@@ -222,7 +222,7 @@ class ProbabilisticSignalDetector:
                 f"expected_return={expected_return:.4%}, vol={diagnostics['realized_volatility']:.4%}, "
                 f"downside_vol={diagnostics['downside_volatility']:.4%}"
             ),
-            triggered_at=datetime.now(timezone.utc),
+            triggered_at=event.timestamp,
             direction=direction,
             confidence=confidence,
             score=normalized_edge,
