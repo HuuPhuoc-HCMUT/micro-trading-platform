@@ -70,12 +70,23 @@ services:
     # Expose 8000 on the host only when running workers locally (Phase 1 / dev).
     expose:
       - "8000"
+    env_file: .env          # loads KAFKA_ENV, SOURCE, SYMBOLS, and Aiven creds when production
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      # Data source and symbol for the Kafka publisher inside the container.
-      # Override with: docker compose up -e SOURCE=binance -e SYMBOL=ETH/USDT
+      # Development default: local Docker Kafka.
+      # Production: .env must set KAFKA_BOOTSTRAP_SERVERS=<aiven-host:port>
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      KAFKA_ENV: ${KAFKA_ENV:-development}
+      # Cert paths inside the container (only used when KAFKA_ENV=production)
+      KAFKA_SSL_CAFILE: /app/certs/ca.pem
+      KAFKA_SSL_CERTFILE: /app/certs/service.cert
+      KAFKA_SSL_KEYFILE: /app/certs/service.key
+      # replication_factor: 1 for local Docker (1 broker), 2 for Aiven (2 brokers registered)
+      REPLICATION_FACTOR: ${REPLICATION_FACTOR:-1}
       SOURCE: ${SOURCE:-binance}
-      SYMBOL: ${SYMBOL:-BTC/USDT}
+      SYMBOLS: ${SYMBOLS:-BTC/USDT,ETH/USDT,SOL/USDT}
+    volumes:
+      # Mount certs/ into the container (empty dir in dev, real certs in prod)
+      - ./certs:/app/certs:ro
     depends_on:
       kafka:
         condition: service_healthy

@@ -28,6 +28,8 @@ from typing import Optional
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
 
+from streaming.kafka_config import get_kafka_ssl_kwargs
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092"
@@ -74,6 +76,7 @@ class KafkaEventProducer:
             key_serializer=lambda k: k.encode("utf-8") if isinstance(k, str) else k,
             # Retry on transient broker errors
             retries=3,
+            **get_kafka_ssl_kwargs(),
             **self._kwargs,
         )
         logger.info("KafkaProducer connected.")

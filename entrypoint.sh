@@ -3,20 +3,20 @@
 #
 # Environment variables (set in docker-compose.yml):
 #   SOURCE                  : binance | coinbase | kraken | simulator  (default: binance)
-#   SYMBOL                  : trading pair                              (default: BTC/USDT)
+#   SYMBOLS                 : comma-separated trading pairs             (default: BTC/USDT,ETH/USDT,SOL/USDT)
 #   KAFKA_BOOTSTRAP_SERVERS : broker address                           (default: kafka:29092)
 
 set -e
 
 SOURCE="${SOURCE:-binance}"
-SYMBOL="${SYMBOL:-BTC/USDT}"
+SYMBOLS="${SYMBOLS:-BTC/USDT,ETH/USDT,SOL/USDT}"
 KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}"
 KAFKA_HOST="${KAFKA_BOOTSTRAP_SERVERS%%:*}"
 KAFKA_PORT="${KAFKA_BOOTSTRAP_SERVERS##*:}"
 
 echo "=== Micro Trading Platform — Kafka mode ==="
 echo "Source  : $SOURCE"
-echo "Symbol  : $SYMBOL"
+echo "Symbols : $SYMBOLS"
 echo "Broker  : $KAFKA_BOOTSTRAP_SERVERS"
 
 # ---------------------------------------------------------------------------
@@ -49,25 +49,51 @@ echo "[2/6] Running DB migration..."
 python -c "from database.db import init_db; init_db(); print('  DB ready.')"
 
 # ---------------------------------------------------------------------------
-# Step 3: Pre-create Kafka topics with 3 partitions each
+# Step 3: Pre-create Kafka topics
 # ---------------------------------------------------------------------------
-echo "[3/6] Creating Kafka topics (3 partitions each)..."
+# replication_factor:
+#   development → 1  (single local broker)
+#   production  → 3  (Aiven standard — requires RF ≥ number of brokers)
+# num_partitions:
+#   Aiven free/startup plan: max 2 partitions per topic → default 1
+#   Override by setting KAFKA_NUM_PARTITIONS in .env (e.g. =2 for paid plans)
+REPLICATION_FACTOR=1
+if [ "${KAFKA_ENV:-development}" = "production" ]; then
+    REPLICATION_FACTOR=2
+fi
+KAFKA_NUM_PARTITIONS="${KAFKA_NUM_PARTITIONS:-1}"
+echo "[3/6] Creating Kafka topics (RF=${REPLICATION_FACTOR}, partitions=${KAFKA_NUM_PARTITIONS})..."
+# Prefix-notation exports these as env vars to the Python subprocess
+REPLICATION_FACTOR=$REPLICATION_FACTOR KAFKA_NUM_PARTITIONS=$KAFKA_NUM_PARTITIONS \
 python -c "
+import os, sys, traceback
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import TopicAlreadyExistsError
-client = KafkaAdminClient(bootstrap_servers='$KAFKA_BOOTSTRAP_SERVERS')
+from streaming.kafka_config import get_kafka_ssl_kwargs
+
+rf  = int(os.environ.get('REPLICATION_FACTOR', 1))
+np_ = int(os.environ.get('KAFKA_NUM_PARTITIONS', 1))
+ssl_kwargs = get_kafka_ssl_kwargs()
+try:
+    client = KafkaAdminClient(bootstrap_servers='$KAFKA_BOOTSTRAP_SERVERS', **ssl_kwargs)
+except Exception as e:
+    print(f'  ERROR connecting to broker for topic creation: {e}', file=sys.stderr)
+    sys.exit(1)
+
 topics = [
-    NewTopic(name='market.price_events', num_partitions=3, replication_factor=1),
-    NewTopic(name='market.alerts',       num_partitions=3, replication_factor=1),
-    NewTopic(name='market.orders',       num_partitions=3, replication_factor=1),
+    NewTopic(name='market.price_events', num_partitions=np_, replication_factor=rf),
+    NewTopic(name='market.alerts',       num_partitions=np_, replication_factor=rf),
+    NewTopic(name='market.orders',       num_partitions=np_, replication_factor=rf),
 ]
 try:
     client.create_topics(topics)
-    print('  Topics created.')
+    print('  Topics created successfully.')
 except TopicAlreadyExistsError:
-    print('  Topics already exist.')
+    print('  Topics already exist — skipping.')
 except Exception as e:
-    print(f'  Topic warning: {e}')
+    traceback.print_exc()
+    print(f'  ERROR: topic creation failed: {e}', file=sys.stderr)
+    sys.exit(1)
 finally:
     client.close()
 "
@@ -91,8 +117,8 @@ echo "[5/6] Starting kafka-db-writer..."
 python main.py --mode kafka-db-writer &
 DBWRITER_PID=$!
 
-echo "[6/6] Starting kafka-publisher ($SOURCE $SYMBOL)..."
-python main.py --mode kafka-publisher --source "$SOURCE" --symbol "$SYMBOL" &
+echo "[6/6] Starting kafka-publisher ($SOURCE $SYMBOLS)..."
+python main.py --mode kafka-publisher --source "$SOURCE" --symbols "$SYMBOLS" &
 PUBLISHER_PID=$!
 
 # ---------------------------------------------------------------------------
@@ -125,7 +151,7 @@ monitor_workers() {
                         DBWRITER_PID=$!
                         ;;
                     kafka-publisher)
-                        python main.py --mode kafka-publisher --source "$SOURCE" --symbol "$SYMBOL" &
+                        python main.py --mode kafka-publisher --source "$SOURCE" --symbols "$SYMBOLS" &
                         PUBLISHER_PID=$!
                         ;;
                 esac

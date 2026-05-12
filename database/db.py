@@ -92,6 +92,16 @@ def init_db():
             except sqlite3.OperationalError:
                 pass  # Cột đã tồn tại
 
+        # Bảng Positions (Vị thế đang mở theo thời gian thực)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol     TEXT PRIMARY KEY,
+                quantity   REAL NOT NULL DEFAULT 0.0,
+                avg_entry  REAL NOT NULL DEFAULT 0.0,
+                updated_at TEXT
+            )
+        ''')
+
         conn.commit()
         logger.info("🗄️ Database (SQLite) đã được khởi tạo thành công. Sẵn sàng lưu sổ sách!")
 
@@ -133,7 +143,21 @@ def save_candle(event):
         cursor.execute('''
             INSERT INTO price_history (timestamp, symbol, open, high, low, close, volume, ticks_count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (ts, event.symbol, open_p, high_p, low_p, event.price, event.volume, 1))
+        ''', (ts, event.symbol, open_p, high_p, low_p, event.price, event.volume, getattr(event, 'ticks_count', 1)))
+        conn.commit()
+
+def save_position(symbol: str, quantity: float, avg_entry: float) -> None:
+    """Upsert the current open position for a symbol."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO positions (symbol, quantity, avg_entry, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                quantity   = excluded.quantity,
+                avg_entry  = excluded.avg_entry,
+                updated_at = excluded.updated_at
+        ''', (symbol, quantity, avg_entry, datetime.now().isoformat()))
         conn.commit()
 
 def save_alert(alert) -> None:

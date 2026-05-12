@@ -509,7 +509,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Lịch sử lệnh</div>
-              <div class="section-note">Các lệnh gần nhất toàn hệ thống</div>
+              <div class="section-note" id="orders-section-note">Các lệnh gần nhất toàn hệ thống</div>
             </div>
           </div>
           <div class="table-wrap">
@@ -536,7 +536,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Tín hiệu gần nhất</div>
-              <div class="section-note">Feed từ CEP và strategy</div>
+              <div class="section-note" id="signals-section-note">Feed từ CEP và strategy</div>
             </div>
           </div>
           <div id="signal-list" class="list-block">
@@ -692,8 +692,17 @@
       }
 
       async function updateOrders() {
-        const orders = await fetchJson(`${API_BASE_URL}/orders?limit=12`);
+        const symParam = currentFocusSymbol
+          ? `&symbol=${encodeURIComponent(currentFocusSymbol)}`
+          : "";
+        const orders = await fetchJson(`${API_BASE_URL}/orders?limit=12${symParam}`);
         const tbody = document.getElementById("order-table-body");
+        const note = document.getElementById("orders-section-note");
+        if (note) {
+          note.textContent = currentFocusSymbol
+            ? `Lệnh gần nhất — ${currentFocusSymbol}`
+            : "Các lệnh gần nhất toàn hệ thống";
+        }
 
         if (!orders.length) {
           tbody.innerHTML = '<tr><td colspan="7" class="empty">Chưa có giao dịch nào.</td></tr>';
@@ -744,7 +753,7 @@
             <div class="mini-stat-value">${Number(focusRow.edge || 0).toFixed(3)} / ${Number(focusRow.confidence || 0).toFixed(2)}</div>
           </div>
           <div class="mini-stat">
-            <div class="mini-stat-label">VềEthế / UPnL</div>
+            <div class="mini-stat-label">Vị thế / UPnL</div>
             <div class="mini-stat-value ${toneClass(focusRow.unrealized)}">${Number(focusRow.position_qty || 0).toFixed(4)} • ${formatSignedMoney(focusRow.unrealized)}</div>
           </div>
         `;
@@ -793,8 +802,17 @@
       }
 
       async function updateSignals() {
-        const signals = await fetchJson(`${API_BASE_URL}/signals?limit=8`);
+        const symParam = currentFocusSymbol
+          ? `&symbol=${encodeURIComponent(currentFocusSymbol)}`
+          : "";
+        const signals = await fetchJson(`${API_BASE_URL}/signals?limit=8${symParam}`);
         const signalList = document.getElementById("signal-list");
+        const note = document.getElementById("signals-section-note");
+        if (note) {
+          note.textContent = currentFocusSymbol
+            ? `CEP signals — ${currentFocusSymbol}`
+            : "Feed từ CEP và strategy";
+        }
 
         if (!signals.length) {
           signalList.innerHTML = '<div class="empty">Chưa có tín hiệu.</div>';

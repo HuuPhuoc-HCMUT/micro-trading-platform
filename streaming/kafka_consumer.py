@@ -32,6 +32,8 @@ from typing import Optional
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 
+from streaming.kafka_config import get_kafka_ssl_kwargs
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092"
@@ -94,6 +96,7 @@ class KafkaEventConsumer:
             key_deserializer=lambda k: k.decode("utf-8") if k else None,
             enable_auto_commit=True,
             auto_commit_interval_ms=1000,
+            **get_kafka_ssl_kwargs(),
             **self._kwargs,
         )
         logger.info("KafkaConsumer connected and subscribed.")

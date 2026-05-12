@@ -103,21 +103,50 @@ def read_root():
     html_path = Path(__file__).parent.parent / "index.html"
     return FileResponse(html_path, media_type="text/html")
 
+INITIAL_BALANCE: float = 10_000.0
+
+
+def _balance_from_orders() -> tuple[float, float]:
+    """Derive cash balance and realized PnL from the orders table.
+
+    This is the only consistent source when multiple strategy workers run in
+    parallel — each worker has its own in-memory OrderManager, so
+    balance_history rows come from different isolated instances and cannot be
+    mixed.  The orders table contains every filled trade from every worker,
+    which gives a single coherent view of the shared account.
+
+    Returns:
+        (balance_usdt, realized_pnl)
+    """
+    row = query_db(
+        """
+        SELECT
+            ? + COALESCE(SUM(
+                CASE WHEN side = 'SELL' THEN  quantity * price
+                     ELSE                    -quantity * price
+                END
+            ), 0.0) AS balance_usdt,
+            COALESCE(SUM(
+                CASE WHEN trade_pnl IS NOT NULL THEN trade_pnl ELSE 0.0 END
+            ), 0.0) AS realized_pnl
+        FROM orders
+        WHERE status = 'FILLED'
+        """,
+        (INITIAL_BALANCE,),
+        one=True,
+    )
+    if row and row['balance_usdt'] is not None:
+        return row['balance_usdt'], row['realized_pnl']
+    return INITIAL_BALANCE, 0.0
+
+
 @app.get("/api/portfolio")
 def get_portfolio():
     """Lấy số dư tài khoản và PnL mới nhất."""
-    latest_balance = query_db(
-        "SELECT * FROM balance_history ORDER BY id DESC LIMIT 1",
-        one=True
-    )
-
-    if latest_balance:
-        return latest_balance
-
+    balance_usdt, realized_pnl = _balance_from_orders()
     return {
-        "balance_usdt": 10000.0,
-        "realized_pnl": 0.0,
-        "timestamp": "Chưa có giao dịch"
+        "balance_usdt": balance_usdt,
+        "realized_pnl": realized_pnl,
     }
 
 @app.get("/api/orders")
@@ -177,12 +206,18 @@ def get_alerts(limit: int = 20):
 
 
 @app.get("/api/signals")
-def get_signals(limit: int = 8):
+def get_signals(limit: int = 8, symbol: str | None = None):
     """Trả về danh sách chuỗi tín hiệu CEP để hiển thị trên dashboard."""
-    alerts = query_db(
-        "SELECT triggered_at, signal_type, symbol, severity, message FROM alerts ORDER BY id DESC LIMIT ?",
-        (limit,)
-    )
+    if symbol:
+        alerts = query_db(
+            "SELECT triggered_at, signal_type, symbol, severity, message FROM alerts WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+            (symbol, limit)
+        )
+    else:
+        alerts = query_db(
+            "SELECT triggered_at, signal_type, symbol, severity, message FROM alerts ORDER BY id DESC LIMIT ?",
+            (limit,)
+        )
     return [
         f"[{a['signal_type']}] {a['symbol']} — {a['message']}"
         for a in alerts
@@ -230,6 +265,17 @@ def get_focus(symbol: str | None = None):
     edge = latest_alert['score'] if latest_alert else 0.0
     confidence = latest_alert['confidence'] if latest_alert else 0.0
 
+    # Lấy vị thế đang mở từ DB (được lưu bởi strategy worker sau mỗi lệnh)
+    pos_row = query_db(
+        "SELECT quantity, avg_entry FROM positions WHERE symbol = ?",
+        (target,),
+        one=True,
+    )
+    pos_qty = pos_row['quantity'] if pos_row else 0.0
+    avg_entry = pos_row['avg_entry'] if pos_row else 0.0
+    # unrealized = qty * (current_price - avg_entry)  — works for both long (qty>0) and short (qty<0)
+    unrealized = pos_qty * (close - avg_entry) if avg_entry and pos_qty else 0.0
+
     return {
         "symbol": target,
         "source": "simulator",
@@ -239,8 +285,8 @@ def get_focus(symbol: str | None = None):
         "trend_label": trend_label,
         "edge": edge,
         "confidence": confidence,
-        "unrealized": 0.0,
-        "position_qty": 0.0,
+        "unrealized": unrealized,
+        "position_qty": pos_qty,
     }
 
 
@@ -257,13 +303,8 @@ def get_state():
     """Trả về trạng thái tổng hợp của platform cho dashboard."""
     global _focus_symbol, _tick_count
 
-    # Số dư mới nhất
-    balance_row = query_db(
-        "SELECT balance_usdt, realized_pnl FROM balance_history ORDER BY id DESC LIMIT 1",
-        one=True
-    )
-    balance_usdt = balance_row['balance_usdt'] if balance_row else 10000.0
-    realized_pnl = balance_row['realized_pnl'] if balance_row else 0.0
+    # Số dư — reconstruct from orders for multi-worker consistency
+    balance_usdt, realized_pnl = _balance_from_orders()
 
     # Số tick tổng
     tick_row = query_db("SELECT COUNT(*) as cnt FROM price_history", one=True)
@@ -319,12 +360,30 @@ def get_state():
     if not _focus_symbol and rows:
         _focus_symbol = rows[0]['symbol']
 
+    # Tính tổng unrealized PnL và market value từ tất cả vị thế đang mở
+    pos_rows = query_db("SELECT symbol, quantity, avg_entry FROM positions WHERE quantity != 0")
+    total_unrealized_pnl = 0.0
+    total_market_value = 0.0
+    for p in pos_rows:
+        price_row = query_db(
+            "SELECT close FROM price_history WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            (p['symbol'],),
+            one=True,
+        )
+        if price_row and p['avg_entry']:
+            total_unrealized_pnl += p['quantity'] * (price_row['close'] - p['avg_entry'])
+            total_market_value += p['quantity'] * price_row['close']
+
+    # Equity = CASH balance + full market value of all open positions
+    # (NOT balance + unrealized_pnl — that would omit the cost basis)
+    equity = balance_usdt + total_market_value
+
     return {
         "summary": {
             "balance_usdt": balance_usdt,
-            "equity": balance_usdt,
+            "equity": equity,
             "realized_pnl": realized_pnl,
-            "total_unrealized_pnl": 0.0,
+            "total_unrealized_pnl": total_unrealized_pnl,
         },
         "focus_symbol": _focus_symbol,
         "sources": ["simulator"],

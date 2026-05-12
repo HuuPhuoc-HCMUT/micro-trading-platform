@@ -26,7 +26,7 @@ from data_source.coinbase_client import stream_trades as coinbase_stream
 from data_source.kraken_client import stream_trades as kraken_stream
 from data_source.time_aggregator import TimeAggregator # <--- THÊM DÒNG NÀY Ở ĐẦU FILE
 
-from database.db import init_db, save_candle, save_alert, save_order, save_balance
+from database.db import init_db, save_candle, save_alert, save_order, save_balance, save_position
 
 from logger_config import setup_logging
 
@@ -56,13 +56,19 @@ EXCHANGE_STREAMS = {
 UDP_IP = "127.0.0.1"
 UDP_PORT = 9999
 
-def real_data_stream(symbol: str, source: str):
-    """Mở luồng WebSocket trực tiếp từ sàn."""
+def real_data_stream(symbols: list[str], source: str):
+    """Open a multi-symbol WebSocket stream from the given exchange."""
     if source not in EXCHANGE_STREAMS:
         raise ValueError(f"Unknown source: {source}")
-    
-    # Chỉ cần gọi hàm, nó sẽ tự động yield data liên tục không cần sleep
-    return EXCHANGE_STREAMS[source](symbol)
+
+    if source == "binance":
+        from data_source.binance_client import iter_binance_trades
+        return iter_binance_trades(symbols)
+    if source == "kraken":
+        from data_source.kraken_client import iter_kraken_trades
+        return iter_kraken_trades(symbols)
+    # Fallback: single-symbol stream for sources without a multi-symbol client
+    return EXCHANGE_STREAMS[source](symbols[0])
 
 def serialize_event(event: PriceEvent) -> bytes:
     """Biến PriceEvent thành chuỗi JSON (bytes) để gửi qua mạng."""
@@ -89,16 +95,18 @@ def run_publisher(stream):
     """TERMINAL 1: Lấy Data, GOM NẾN (Aggregator), rồi mới bắn qua mạng"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    # Khởi tạo bộ gom nến 1 giây
-    aggregator = TimeAggregator(interval_seconds=1.0) 
+    # One TimeAggregator per symbol so candles are never mixed across symbols
+    aggregators: dict[str, TimeAggregator] = {}
     
     candle_count = 0
     logger.info(f"🚀 PUBLISHER is running. Aggregating to 1s candles -> UDP {UDP_IP}:{UDP_PORT}")
     
     try:
         for raw_event in stream:
-            # 1. Ném tick thô vào Aggregator
-            aggregated_event = aggregator.process(raw_event)
+            sym = raw_event.symbol
+            if sym not in aggregators:
+                aggregators[sym] = TimeAggregator(interval_seconds=1.0)
+            aggregated_event = aggregators[sym].process(raw_event)
             
             # 2. Chỉ khi nào nến đóng (trả về event) thì mới in log và gửi đi
             if aggregated_event:
@@ -189,7 +197,6 @@ def run_kafka_publisher(stream) -> None:
         stream: An iterable of :class:`PriceEvent` objects (simulator or
             real exchange client).
     """
-    aggregator = TimeAggregator(interval_seconds=1.0)
     candle_count = 0
 
     logger.info(
@@ -198,9 +205,14 @@ def run_kafka_publisher(stream) -> None:
     )
 
     with KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        # One TimeAggregator per symbol — prevents mixing BTC/ETH/SOL candles
+        aggregators: dict[str, TimeAggregator] = {}
         try:
             for raw_event in stream:
-                aggregated_event = aggregator.process(raw_event)
+                sym = raw_event.symbol
+                if sym not in aggregators:
+                    aggregators[sym] = TimeAggregator(interval_seconds=1.0)
+                aggregated_event = aggregators[sym].process(raw_event)
                 if aggregated_event:
                     candle_count += 1
                     logger.info(
@@ -356,6 +368,10 @@ def run_kafka_strategy_worker() -> None:
                     # save_order() is intentionally omitted; the db-writer handles it
                     # via the market.orders Kafka topic.
                     save_balance(order_manager.balance, order_manager.realized_pnl)
+                    # Persist the current open position so the API can expose it.
+                    pos = order_manager.positions.get(symbol)
+                    if pos is not None:
+                        save_position(symbol, pos.quantity, pos.avg_entry)
                     producer.send(
                         ORDERS_TOPIC,
                         value=serialize_order(new_order),
@@ -457,7 +473,11 @@ def main() -> None:
         help="Chọn MỘT nguồn dữ liệu (VD: binance, kraken, simulator)"
     )
     
-    parser.add_argument("--symbol", default="BTC/USDT", help="Trading pair")
+    parser.add_argument(
+        "--symbols",
+        default="BTC/USDT,ETH/USDT,SOL/USDT",
+        help="Comma-separated trading pairs (e.g. BTC/USDT,ETH/USDT,SOL/USDT)",
+    )
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between ticks")
     args = parser.parse_args()
 
@@ -479,13 +499,21 @@ def main() -> None:
         return
 
     # Khởi tạo Data Stream (dùng cho Publisher)
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     if args.source == "simulator":
+        # generate_price_stream defaults to BTC/ETH/SOL; honour custom symbol list
+        default_prices = {
+            "BTC/USDT": 40000.0,
+            "ETH/USDT": 2500.0,
+            "SOL/USDT": 100.0,
+        }
+        symbols_start_prices = {s: default_prices.get(s, 1000.0) for s in symbols}
         stream = generate_price_stream(
-            symbol=args.symbol, start_price=40000.0, interval=args.interval,
+            symbols_start_prices=symbols_start_prices,
+            interval=args.interval,
         )
     else:
-        # Xóa args.interval ở đây đi
-        stream = real_data_stream(args.symbol, args.source)
+        stream = real_data_stream(symbols, args.source)
 
     if args.mode == "publisher":
         run_publisher(stream)

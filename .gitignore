@@ -1,3 +1,9 @@
 .venv/*
 __pycache__/
 *.pyc
+
+# Secrets — never commit
+.env
+certs/*.pem
+certs/*.cert
+certs/*.key
