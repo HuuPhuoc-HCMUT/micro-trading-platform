@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import math
 from datetime import datetime, timezone
@@ -57,7 +59,8 @@ class SpikeDetector:
                         f"Price spike {direction}: {change_percent:.2f}% "
                         f"over last {self.window_size} ticks. Current: ${current_price:.2f}"
                     ),
-                    triggered_at=datetime.now(timezone.utc),
+                    triggered_at=event.timestamp,
+                    price=current_price,
                     direction=trade_direction,
                     confidence=confidence,
                     score=math.tanh(abs(change_percent) / self.threshold_percent) * (1 if change_percent > 0 else -1),

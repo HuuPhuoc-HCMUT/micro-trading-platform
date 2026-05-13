@@ -179,7 +179,7 @@
 
       #tvchart {
         width: 100%;
-        height: 420px;
+        height: 460px;
         border-radius: 18px;
         overflow: hidden;
       }
@@ -187,7 +187,21 @@
       .symbol-grid {
         display: grid;
         gap: 12px;
+        max-height: 480px;
+        overflow-y: auto;
       }
+
+      .btn-refresh {
+        padding: 6px 14px;
+        border-radius: 999px;
+        background: rgba(56,189,248,0.12);
+        border: 1px solid rgba(56,189,248,0.3);
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s ease;
+      }
+      .btn-refresh:hover { background: rgba(56,189,248,0.22); }
 
       .symbol-card {
         width: 100%;
@@ -324,6 +338,78 @@
         padding: 22px 12px;
       }
 
+      /* --- SSE status bar --- */
+      .status-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 18px;
+        margin-bottom: 20px;
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        font-size: 13px;
+        color: var(--muted);
+        backdrop-filter: blur(10px);
+      }
+
+      .status-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+      }
+
+      .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent-2);
+        flex-shrink: 0;
+        transition: background 0.3s;
+      }
+
+      .live-dot:not(.offline) {
+        animation: pulse-live 2s infinite;
+      }
+
+      .live-dot.offline {
+        background: var(--danger);
+      }
+
+      @keyframes pulse-live {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }
+        50%       { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+      }
+
+      /* --- Live price flash on SSE update --- */
+      @keyframes flash-up {
+        0%   { color: var(--accent-2); text-shadow: 0 0 8px rgba(34, 197, 94, 0.7); }
+        100% { }
+      }
+
+      @keyframes flash-down {
+        0%   { color: var(--danger); text-shadow: 0 0 8px rgba(244, 63, 94, 0.7); }
+        100% { }
+      }
+
+      .flash-up   { animation: flash-up   0.8s ease-out forwards; }
+      .flash-down { animation: flash-down 0.8s ease-out forwards; }
+
+      /* --- Live price chip in chart header --- */
+      .live-price-chip {
+        display: flex;
+        align-items: baseline;
+        gap: 4px;
+      }
+
+      .live-price-value {
+        font-size: 22px;
+        font-weight: 700;
+        min-width: 130px;
+        text-align: right;
+      }
+
       @media (max-width: 980px) {
         .hero,
         .content-grid,
@@ -340,19 +426,30 @@
   </head>
   <body>
     <main class="shell">
+      <!-- SSE connection status bar -->
+      <div class="status-bar">
+        <span class="status-left">
+          <span class="live-dot" id="sse-dot"></span>
+          <span id="sse-label">Connecting...</span>
+          <span style="color:rgba(148,163,184,0.35)"> · </span>
+          <span>Kafka CEP Pipeline</span>
+        </span>
+        <span>Micro Trading Platform</span>
+      </div>
+
       <section class="hero">
         <article class="panel hero-card">
           <div class="eyebrow">Realtime Trading Monitor</div>
           <h1>Micro Trading Dashboard</h1>
-          <p class="hero-copy">
-            Giao diện web được làm lại từ logic terminal dashboard để theo dõi
-            portfolio, tín hiệu, nến giá và lịch sử lệnh trong một màn hình dễ đọc hơn.
+          <p class="hero-copy" style="font-size:13px;margin-bottom:4px">
+            Publisher → CEP Engine → Strategy Bots → DB Writer · Paper trading only
           </p>
           <div class="hero-meta">
             <div class="pill">Focus: <strong id="focus-pill">Đang tải...</strong></div>
             <div class="pill">Source: <strong id="source-pill">Đang tải...</strong></div>
             <div class="pill">Ticks: <strong id="tick-pill">0</strong></div>
-            <div class="pill">Refresh: <strong>1 giây</strong></div>
+            <div class="pill">Cập nhật: <strong id="updated-pill">-</strong></div>
+            <button class="btn-refresh" id="refresh-btn">&#x21BB; Làm mới</button>
           </div>
         </article>
 
@@ -383,6 +480,10 @@
               <div class="section-note" id="chart-note">Đang tải dữ liệu nến...</div>
             </div>
             <div class="section-actions">
+              <div class="live-price-chip">
+                <span class="muted" style="font-size:13px;color:var(--muted)">Live</span>
+                <span id="live-price" class="live-price-value">—</span>
+              </div>
               <label for="symbol-select" class="section-note">Chọn mã</label>
               <select id="symbol-select" class="symbol-select">
                 <option value="">Đang tải...</option>
@@ -408,7 +509,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Lịch sử lệnh</div>
-              <div class="section-note">Các lệnh gần nhất toàn hệ thống</div>
+              <div class="section-note" id="orders-section-note">Các lệnh gần nhất toàn hệ thống</div>
             </div>
           </div>
           <div class="table-wrap">
@@ -435,7 +536,7 @@
           <div class="section-head">
             <div>
               <div class="section-title">Tín hiệu gần nhất</div>
-              <div class="section-note">Feed từ CEP và strategy</div>
+              <div class="section-note" id="signals-section-note">Feed từ CEP và strategy</div>
             </div>
           </div>
           <div id="signal-list" class="list-block">
@@ -451,7 +552,7 @@
             </div>
           </div>
           <div class="detail-grid">
-            <div class="list-block">
+            <div class="list-block" style="grid-column: 1 / -1">
               <div id="focus-metrics" class="metric-grid">
                 <div class="empty">Đang tải chi tiết...</div>
               </div>
@@ -475,7 +576,7 @@
               </div>
             </div>
 
-            <div class="table-wrap">
+            <!-- <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -491,7 +592,7 @@
                   <tr><td colspan="6" class="empty">Chưa có giao dịch cho symbol này.</td></tr>
                 </tbody>
               </table>
-            </div>
+            </div> -->
           </div>
         </section>
       </section>
@@ -501,6 +602,14 @@
       const API_BASE_URL = `${window.location.origin}/api`;
       let currentFocusSymbol = null;
       let latestRows = [];
+      let _refreshing = false;
+      let _lastSymbolKey = "";
+      let _lastUpdated = null;
+
+      // SSE state
+      let _sseSource = null;
+      let _sseReconnectTimer = null;
+      const _symbolPriceCache = {}; // symbol → { price }
 
       const chart = LightweightCharts.createChart(document.getElementById("tvchart"), {
         layout: {
@@ -521,7 +630,7 @@
         },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
         width: document.getElementById("tvchart").clientWidth,
-        height: 420,
+        height: 460,
       });
 
       const candleSeries = chart.addCandlestickSeries({
@@ -541,8 +650,11 @@
 
       function formatSignedMoney(value) {
         const amount = Number(value || 0);
-        const sign = amount > 0 ? "+" : "";
-        return `${sign}${formatMoney(amount)}`;
+        const abs = Math.abs(amount);
+        const formatted = `$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        if (amount > 0) return `+${formatted}`;
+        if (amount < 0) return `-${formatted}`;
+        return formatted;
       }
 
       function toneClass(value) {
@@ -580,8 +692,17 @@
       }
 
       async function updateOrders() {
-        const orders = await fetchJson(`${API_BASE_URL}/orders?limit=12`);
+        const symParam = currentFocusSymbol
+          ? `&symbol=${encodeURIComponent(currentFocusSymbol)}`
+          : "";
+        const orders = await fetchJson(`${API_BASE_URL}/orders?limit=12${symParam}`);
         const tbody = document.getElementById("order-table-body");
+        const note = document.getElementById("orders-section-note");
+        if (note) {
+          note.textContent = currentFocusSymbol
+            ? `Lệnh gần nhất — ${currentFocusSymbol}`
+            : "Các lệnh gần nhất toàn hệ thống";
+        }
 
         if (!orders.length) {
           tbody.innerHTML = '<tr><td colspan="7" class="empty">Chưa có giao dịch nào.</td></tr>';
@@ -681,8 +802,17 @@
       }
 
       async function updateSignals() {
-        const signals = await fetchJson(`${API_BASE_URL}/signals?limit=8`);
+        const symParam = currentFocusSymbol
+          ? `&symbol=${encodeURIComponent(currentFocusSymbol)}`
+          : "";
+        const signals = await fetchJson(`${API_BASE_URL}/signals?limit=8${symParam}`);
         const signalList = document.getElementById("signal-list");
+        const note = document.getElementById("signals-section-note");
+        if (note) {
+          note.textContent = currentFocusSymbol
+            ? `CEP signals — ${currentFocusSymbol}`
+            : "Feed từ CEP và strategy";
+        }
 
         if (!signals.length) {
           signalList.innerHTML = '<div class="empty">Chưa có tín hiệu.</div>';
@@ -698,7 +828,89 @@
         if (!symbol) return;
         await fetchJson(`${API_BASE_URL}/focus?symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
         currentFocusSymbol = symbol;
-        await updateChart();
+      }
+
+      // -----------------------------------------------------------------------
+      // SSE — live candle stream from Kafka via /api/stream/candles
+      // -----------------------------------------------------------------------
+
+      function updateSSEStatus(connected) {
+        const dot = document.getElementById("sse-dot");
+        const label = document.getElementById("sse-label");
+        if (!dot || !label) return;
+        if (connected) {
+          dot.classList.remove("offline");
+          label.textContent = "LIVE";
+        } else {
+          dot.classList.add("offline");
+          label.textContent = "Reconnecting...";
+        }
+      }
+
+      function flashSymbolPrice(symbol, price) {
+        const prev = _symbolPriceCache[symbol];
+        const dir = prev
+          ? (price > prev.price ? "up" : price < prev.price ? "down" : null)
+          : null;
+        _symbolPriceCache[symbol] = { price };
+
+        // Update live-price chip if this is the focused symbol
+        if (symbol === currentFocusSymbol) {
+          const chip = document.getElementById("live-price");
+          if (chip) {
+            chip.textContent = formatMoney(price);
+            chip.className = `live-price-value${dir ? ` flash-${dir}` : ""}`;
+          }
+        }
+
+        // Flash symbol card price
+        if (!dir) return;
+        const card = document.querySelector(`.symbol-card[data-symbol="${CSS.escape(symbol)}"]`);
+        if (!card) return;
+        const priceEl = card.querySelector(".symbol-price-val");
+        if (!priceEl) return;
+        priceEl.textContent = formatMoney(price);
+        priceEl.classList.remove("flash-up", "flash-down");
+        void priceEl.offsetWidth; // force reflow to restart animation
+        priceEl.classList.add(`flash-${dir}`);
+      }
+
+      async function handleSSECandle(event) {
+        flashSymbolPrice(event.symbol, event.price);
+
+        // For the focused symbol, update the chart in real-time via the API
+        if (event.symbol !== currentFocusSymbol) return;
+        try {
+          const candles = await fetchJson(
+            `${API_BASE_URL}/candles?symbol=${encodeURIComponent(currentFocusSymbol)}&limit=2`
+          );
+          if (candles.length) {
+            candleSeries.update(candles[candles.length - 1]);
+            document.getElementById("chart-note").textContent =
+              `${currentFocusSymbol} · Live`;
+          }
+        } catch (_) { /* silent */ }
+      }
+
+      function initSSE() {
+        if (_sseSource) { _sseSource.close(); _sseSource = null; }
+        if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
+
+        const src = new EventSource(`${API_BASE_URL}/stream/candles`);
+        _sseSource = src;
+
+        src.onopen = () => updateSSEStatus(true);
+
+        src.onmessage = (ev) => {
+          try { handleSSECandle(JSON.parse(ev.data)); } catch (_) {}
+        };
+
+        src.onerror = () => {
+          updateSSEStatus(false);
+          src.close();
+          _sseSource = null;
+          _sseReconnectTimer = setTimeout(initSSE, 3000);
+        };
       }
 
       function renderSymbolSelect(rows, focusSymbol) {
@@ -717,15 +929,30 @@
 
       function renderSymbols(rows, focusSymbol) {
         const container = document.getElementById("symbol-grid");
+        // Key on layout-affecting fields only; SSE handles live price flashing
+        const newKey = JSON.stringify(rows.map(r => `${r.symbol}|${r.action}|${r.trend_arrow}`));
 
         if (!rows.length) {
-          container.innerHTML = '<div class="empty">Không có symbol nào để hiển thị.</div>';
+          container.innerHTML = '<div class="empty">Không có symbol nào để hiển thị</div>';
+          _lastSymbolKey = "";
           return;
         }
+
+        // Only rebuild DOM when structure changes — prevents hover flicker & animation interruption
+        if (newKey === _lastSymbolKey) {
+          container.querySelectorAll(".symbol-card").forEach(card => {
+            card.classList.toggle("active", card.dataset.symbol === focusSymbol);
+          });
+          return;
+        }
+        _lastSymbolKey = newKey;
 
         container.innerHTML = rows
           .map((row) => {
             const priceClass = toneClass(row.change);
+            // Use SSE-cached price if available for immediate display
+            const cached = _symbolPriceCache[row.symbol];
+            const displayPrice = cached ? cached.price : row.close;
             return `
               <button type="button" class="symbol-card ${row.symbol === focusSymbol ? "active" : ""}" data-symbol="${row.symbol}">
                 <div class="symbol-top">
@@ -733,11 +960,11 @@
                     <div class="symbol-name">${row.symbol}</div>
                     <div class="symbol-source">${(row.active_sources || []).join(", ") || row.source}</div>
                   </div>
-                  <div class="${priceClass}"><strong>${formatMoney(row.close)}</strong></div>
+                  <div class="${priceClass}"><strong class="symbol-price-val">${formatMoney(displayPrice)}</strong></div>
                 </div>
                 <div class="symbol-bottom">
                   <div class="symbol-extra">
-                    Trend ${row.trend_arrow} ${row.trend_label} • Edge ${Number(row.edge).toFixed(3)}
+                    ${row.trend_arrow} ${row.trend_label} &nbsp;·&nbsp; Edge ${Number(row.edge).toFixed(3)}
                   </div>
                   <div>${actionBadge(row.action)}</div>
                 </div>
@@ -772,16 +999,35 @@
         document.getElementById("focus-pill").textContent = state.focus_symbol || "-";
         document.getElementById("source-pill").textContent = (state.sources || []).join(", ") || "-";
         document.getElementById("tick-pill").textContent = state.tick_count ?? 0;
+
+        _lastUpdated = new Date();
+        document.getElementById("updated-pill").textContent = "0s ago";
       }
 
+      // State-only refresh (sidebar, orders, signals) — chart is driven by SSE
+      async function refreshState() {
+        if (_refreshing) return;
+        _refreshing = true;
+        try {
+          const state = await fetchJson(`${API_BASE_URL}/state`);
+          currentFocusSymbol = state.focus_symbol || currentFocusSymbol;
+          latestRows = state.rows || [];
+          renderSummary(state);
+          renderSymbolSelect(latestRows, currentFocusSymbol);
+          renderSymbols(latestRows, currentFocusSymbol);
+          await Promise.all([updateOrders(), updateSignals(), updateFocusDetails()]);
+        } catch (err) {
+          console.error("State refresh failed:", err);
+          document.getElementById("updated-pill").textContent = "Error";
+        } finally {
+          _refreshing = false;
+        }
+      }
+
+      // Full refresh including chart (used on first load and manual refresh)
       async function refreshDashboard() {
-        const state = await fetchJson(`${API_BASE_URL}/state`);
-        currentFocusSymbol = state.focus_symbol || currentFocusSymbol;
-        latestRows = state.rows || [];
-        renderSummary(state);
-        renderSymbolSelect(latestRows, currentFocusSymbol);
-        renderSymbols(latestRows, currentFocusSymbol);
-        await Promise.all([updateChart(), updateOrders(), updateSignals(), updateFocusDetails()]);
+        await refreshState();
+        await updateChart();
       }
 
       document.getElementById("symbol-select").addEventListener("change", async (event) => {
@@ -792,13 +1038,25 @@
         }
       });
 
+      document.getElementById("refresh-btn").addEventListener("click", refreshDashboard);
+
+      // Boot
       refreshDashboard();
-      setInterval(refreshDashboard, 1000);
+      initSSE();
+
+      // Slow poll for state/orders/signals — chart is event-driven via SSE
+      setInterval(refreshState, 3000);
+
+      // Staleness indicator
+      setInterval(() => {
+        if (!_lastUpdated) return;
+        const secs = Math.round((Date.now() - _lastUpdated.getTime()) / 1000);
+        const pill = document.getElementById("updated-pill");
+        if (pill) pill.textContent = `${secs}s ago`;
+      }, 1000);
 
       window.addEventListener("resize", () => {
-        chart.applyOptions({
-          width: document.getElementById("tvchart").clientWidth,
-        });
+        chart.applyOptions({ width: document.getElementById("tvchart").clientWidth });
       });
     </script>
   </body>

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import time
@@ -24,9 +26,23 @@ from data_source.coinbase_client import stream_trades as coinbase_stream
 from data_source.kraken_client import stream_trades as kraken_stream
 from data_source.time_aggregator import TimeAggregator # <--- THÊM DÒNG NÀY Ở ĐẦU FILE
 
-from database.db import init_db, save_candle
+from database.db import init_db, save_candle, save_alert, save_order, save_balance, save_position
 
 from logger_config import setup_logging
+
+# Kafka streaming layer
+import os
+from streaming.kafka_producer import KafkaEventProducer
+from streaming.kafka_consumer import KafkaEventConsumer
+from streaming.topics import PRICE_EVENTS_TOPIC, ALERTS_TOPIC, ORDERS_TOPIC
+from streaming.serializers import (
+    serialize_price_event,
+    deserialize_price_event,
+    serialize_alert,
+    deserialize_alert,
+    serialize_order,
+    deserialize_order,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -40,13 +56,19 @@ EXCHANGE_STREAMS = {
 UDP_IP = "127.0.0.1"
 UDP_PORT = 9999
 
-def real_data_stream(symbol: str, source: str):
-    """Mở luồng WebSocket trực tiếp từ sàn."""
+def real_data_stream(symbols: list[str], source: str):
+    """Open a multi-symbol WebSocket stream from the given exchange."""
     if source not in EXCHANGE_STREAMS:
         raise ValueError(f"Unknown source: {source}")
-    
-    # Chỉ cần gọi hàm, nó sẽ tự động yield data liên tục không cần sleep
-    return EXCHANGE_STREAMS[source](symbol)
+
+    if source == "binance":
+        from data_source.binance_client import iter_binance_trades
+        return iter_binance_trades(symbols)
+    if source == "kraken":
+        from data_source.kraken_client import iter_kraken_trades
+        return iter_kraken_trades(symbols)
+    # Fallback: single-symbol stream for sources without a multi-symbol client
+    return EXCHANGE_STREAMS[source](symbols[0])
 
 def serialize_event(event: PriceEvent) -> bytes:
     """Biến PriceEvent thành chuỗi JSON (bytes) để gửi qua mạng."""
@@ -73,16 +95,18 @@ def run_publisher(stream):
     """TERMINAL 1: Lấy Data, GOM NẾN (Aggregator), rồi mới bắn qua mạng"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    # Khởi tạo bộ gom nến 1 giây
-    aggregator = TimeAggregator(interval_seconds=1.0) 
+    # One TimeAggregator per symbol so candles are never mixed across symbols
+    aggregators: dict[str, TimeAggregator] = {}
     
     candle_count = 0
     logger.info(f"🚀 PUBLISHER is running. Aggregating to 1s candles -> UDP {UDP_IP}:{UDP_PORT}")
     
     try:
         for raw_event in stream:
-            # 1. Ném tick thô vào Aggregator
-            aggregated_event = aggregator.process(raw_event)
+            sym = raw_event.symbol
+            if sym not in aggregators:
+                aggregators[sym] = TimeAggregator(interval_seconds=1.0)
+            aggregated_event = aggregators[sym].process(raw_event)
             
             # 2. Chỉ khi nào nến đóng (trả về event) thì mới in log và gửi đi
             if aggregated_event:
@@ -158,6 +182,270 @@ def run_subscriber():
         logger.info("Subscriber stopped. Final Portfolio:")
         print(order_manager.get_portfolio_summary())
 
+# Read broker address from environment so containers can override it.
+KAFKA_BOOTSTRAP_SERVERS: str = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
+
+def run_kafka_publisher(stream) -> None:
+    """Kafka publisher: read from a data stream and publish PriceEvents.
+
+    Aggregates raw ticks into 1-second candles (via :class:`TimeAggregator`)
+    then serialises each closed candle and sends it to the
+    ``market.price_events`` Kafka topic, keyed by symbol.
+
+    Args:
+        stream: An iterable of :class:`PriceEvent` objects (simulator or
+            real exchange client).
+    """
+    candle_count = 0
+
+    logger.info(
+        "🚀 KAFKA PUBLISHER starting — broker=%s topic=%s",
+        KAFKA_BOOTSTRAP_SERVERS, PRICE_EVENTS_TOPIC,
+    )
+
+    with KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        # One TimeAggregator per symbol — prevents mixing BTC/ETH/SOL candles
+        aggregators: dict[str, TimeAggregator] = {}
+        try:
+            for raw_event in stream:
+                sym = raw_event.symbol
+                if sym not in aggregators:
+                    aggregators[sym] = TimeAggregator(interval_seconds=1.0)
+                aggregated_event = aggregators[sym].process(raw_event)
+                if aggregated_event:
+                    candle_count += 1
+                    logger.info(
+                        "[CANDLE #%d] %s | Close: $%.2f | Vol: %.4f | Ticks: %d",
+                        candle_count,
+                        aggregated_event.symbol,
+                        aggregated_event.price,
+                        aggregated_event.volume,
+                        getattr(aggregated_event, "ticks_count", 0),
+                    )
+                    producer.send(
+                        PRICE_EVENTS_TOPIC,
+                        value=serialize_price_event(aggregated_event),
+                        key=aggregated_event.symbol,
+                    )
+        except KeyboardInterrupt:
+            logger.info("Kafka publisher stopped.")
+
+
+def run_kafka_cep_worker() -> None:
+    """Kafka CEP worker: consume PriceEvents and publish Alerts.
+
+    Subscribes to ``market.price_events``, runs all four CEP detectors
+    (Moving Average, Spike, Volume Anomaly, Probabilistic) on each event,
+    then publishes any resulting :class:`Alert` objects to ``market.alerts``.
+    """
+    logger.info(
+        "🔬 KAFKA CEP WORKER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    init_db()
+
+    ma_detector = MovingAverageDetector(short_window=15, long_window=60)
+    spike_detector = SpikeDetector(threshold_percent=2.0, window_size=5)
+    volume_detector = VolumeAnomalyDetector(window_size=10, multiplier=3.0)
+    probabilistic_detector = ProbabilisticSignalDetector(
+        window_size=60,
+        min_history=20,
+        learning_rate=0.06,
+        signal_threshold=0.20,
+    )
+
+    consumer = KafkaEventConsumer(
+        topics=[PRICE_EVENTS_TOPIC],
+        group_id="cep-worker",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="latest",
+    )
+
+    with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        for raw in consumer.consume():
+            try:
+                event = deserialize_price_event(raw)
+            except Exception as exc:
+                logger.error("Failed to deserialise PriceEvent: %s", exc)
+                continue
+
+            save_candle(event)
+
+            detectors = [ma_detector, spike_detector, volume_detector, probabilistic_detector]
+            for detector in detectors:
+                try:
+                    alert = detector.process(event)
+                    if alert:
+                        logger.warning(
+                            ">>> ALERT [%s] %s | %s",
+                            alert.signal_type, alert.symbol, alert.message,
+                        )
+                        save_alert(alert)
+                        producer.send(
+                            ALERTS_TOPIC,
+                            value=serialize_alert(alert),
+                            key=alert.symbol,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "CEP detector %s raised an error: %s",
+                        type(detector).__name__, exc,
+                    )
+
+
+def run_kafka_strategy_worker() -> None:
+    """Kafka strategy worker: consume Alerts and publish Orders.
+
+    Subscribes to ``market.alerts``, buffers alerts per symbol within a
+    short accumulation window, then passes them to :class:`RuleBasedStrategy`
+    which may produce paper-trade orders that are saved to the DB and
+    published to ``market.orders``.
+
+    The worker also maintains its own in-memory price cache so the strategy
+    can calculate P&L without an extra round-trip to the database.
+    """
+    logger.info(
+        "📈 KAFKA STRATEGY WORKER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    init_db()
+
+    # persist_to_db=False: OrderManager must NOT write directly to SQLite.
+    # All order persistence is handled exclusively by the Kafka db-writer worker
+    # consuming market.orders.  Without this, every order is written twice:
+    # once here and once by the db-writer.
+    order_manager = OrderManager(initial_balance=10000.0, persist_to_db=False)
+    strategy = RuleBasedStrategy(order_manager)
+
+    # Price cache: symbol → latest price (for unrealised P&L)
+    price_cache: dict[str, float] = {}
+
+    # Alert accumulation buffer: symbol → list of Alerts for the current candle
+    alert_buffer: dict[str, list] = {}
+
+    # Track the candle timestamp we are currently accumulating for each symbol.
+    # When a new timestamp arrives we flush the old candle's alerts first.
+    candle_ts_cache: dict[str, str] = {}
+
+    # Track how many orders have already been published to market.orders so that
+    # repeated _flush_symbol calls (triggered by VOLUME_ANOMALY etc.) do not
+    # re-publish the same FILLED order every time.
+    last_published_order_count: int = 0
+
+    consumer = KafkaEventConsumer(
+        topics=[ALERTS_TOPIC],
+        group_id="strategy-group",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        auto_offset_reset="latest",
+    )
+
+    def _flush_symbol(symbol: str) -> None:
+        """Run the strategy with all accumulated alerts for *symbol* and publish any order."""
+        nonlocal last_published_order_count
+        pending = alert_buffer.pop(symbol, [])
+        cached_price = price_cache.get(symbol, 0.0)
+        if not pending or cached_price == 0.0:
+            return
+        synthetic_event = PriceEvent(
+            symbol=symbol,
+            price=cached_price,
+            volume=0.0,
+            timestamp=pending[-1].triggered_at,
+            source="kafka-strategy",
+        )
+        strategy.execute(pending, synthetic_event)
+        current_count = len(order_manager.order_history)
+        if current_count > last_published_order_count:
+            # Only publish orders that were added since the last flush.
+            new_orders = order_manager.order_history[last_published_order_count:]
+            last_published_order_count = current_count
+            for new_order in new_orders:
+                if new_order.status == "FILLED":
+                    # Save balance here — only this worker has the OrderManager state.
+                    # save_order() is intentionally omitted; the db-writer handles it
+                    # via the market.orders Kafka topic.
+                    save_balance(order_manager.balance, order_manager.realized_pnl)
+                    # Persist the current open position so the API can expose it.
+                    pos = order_manager.positions.get(symbol)
+                    if pos is not None:
+                        save_position(symbol, pos.quantity, pos.avg_entry)
+                    producer.send(
+                        ORDERS_TOPIC,
+                        value=serialize_order(new_order),
+                        key=symbol,
+                    )
+
+    with consumer, KafkaEventProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS) as producer:
+        for raw in consumer.consume():
+            try:
+                alert = deserialize_alert(raw)
+            except Exception as exc:
+                logger.error("Failed to deserialise Alert: %s", exc)
+                continue
+
+            symbol = alert.symbol
+
+            # Use the price embedded directly in the alert
+            if alert.price > 0.0:
+                price_cache[symbol] = alert.price
+
+            # Determine this alert's candle timestamp
+            alert_ts = (
+                alert.triggered_at.isoformat()
+                if hasattr(alert.triggered_at, "isoformat")
+                else str(alert.triggered_at)
+            )
+
+            # When a new candle arrives for this symbol, flush the previous one first
+            prev_ts = candle_ts_cache.get(symbol)
+            if prev_ts is not None and prev_ts != alert_ts:
+                _flush_symbol(symbol)
+
+            candle_ts_cache[symbol] = alert_ts
+            alert_buffer.setdefault(symbol, []).append(alert)
+
+
+def run_kafka_db_writer() -> None:
+    """Kafka DB writer: the only process that writes orders to SQLite.
+
+    Consumes ``market.orders`` and persists each filled order via
+    :func:`database.db.save_order`.  Running exactly one instance of this
+    worker eliminates SQLite ``database is locked`` errors that would occur
+    if multiple strategy bots wrote concurrently.
+    """
+    logger.info(
+        "🗄️ KAFKA DB WRITER starting — broker=%s",
+        KAFKA_BOOTSTRAP_SERVERS,
+    )
+
+    init_db()
+
+    consumer = KafkaEventConsumer(
+        topics=[ORDERS_TOPIC],
+        group_id="db-writer",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        # "latest": on fresh start (no committed offset), skip historical messages.
+        # Prevents replaying all past orders into the DB on every clean deploy.
+        # After the first run, Kafka commits offsets and restarts resume correctly.
+        auto_offset_reset="latest",
+    )
+
+    with consumer:
+        for raw in consumer.consume():
+            try:
+                order = deserialize_order(raw)
+                save_order(order)
+                logger.info(
+                    "DB WRITE: %s %s %.6f @ %.2f [%s]",
+                    order.side, order.symbol, order.quantity, order.price, order.status,
+                )
+            except Exception as exc:
+                logger.error("DB writer failed to persist order: %s", exc)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Micro Trading Platform")
     
@@ -165,9 +453,15 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["publisher", "subscriber", "standalone"],
+        choices=[
+            "publisher", "subscriber", "standalone",
+            "kafka-publisher", "kafka-cep", "kafka-strategy", "kafka-db-writer",
+        ],
         default="standalone",
-        help="Chế độ chạy: publisher (Terminal 1), subscriber (Terminal 2), hoặc standalone",
+        help=(
+            "Run mode: publisher/subscriber (UDP, Phase 1) | "
+            "kafka-publisher / kafka-cep / kafka-strategy (Kafka, Phase 2)"
+        ),
     )
     
     # 2. Cấu hình SOURCE (Nguồn dữ liệu - Chỉ nhận 1 giá trị)
@@ -179,7 +473,11 @@ def main() -> None:
         help="Chọn MỘT nguồn dữ liệu (VD: binance, kraken, simulator)"
     )
     
-    parser.add_argument("--symbol", default="BTC/USDT", help="Trading pair")
+    parser.add_argument(
+        "--symbols",
+        default="BTC/USDT,ETH/USDT,SOL/USDT",
+        help="Comma-separated trading pairs (e.g. BTC/USDT,ETH/USDT,SOL/USDT)",
+    )
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between ticks")
     args = parser.parse_args()
 
@@ -188,17 +486,39 @@ def main() -> None:
         run_subscriber()
         return
 
+    if args.mode == "kafka-cep":
+        run_kafka_cep_worker()
+        return
+
+    if args.mode == "kafka-strategy":
+        run_kafka_strategy_worker()
+        return
+
+    if args.mode == "kafka-db-writer":
+        run_kafka_db_writer()
+        return
+
     # Khởi tạo Data Stream (dùng cho Publisher)
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     if args.source == "simulator":
+        # generate_price_stream defaults to BTC/ETH/SOL; honour custom symbol list
+        default_prices = {
+            "BTC/USDT": 40000.0,
+            "ETH/USDT": 2500.0,
+            "SOL/USDT": 100.0,
+        }
+        symbols_start_prices = {s: default_prices.get(s, 1000.0) for s in symbols}
         stream = generate_price_stream(
-            symbol=args.symbol, start_price=40000.0, interval=args.interval,
+            symbols_start_prices=symbols_start_prices,
+            interval=args.interval,
         )
     else:
-        # Xóa args.interval ở đây đi
-        stream = real_data_stream(args.symbol, args.source)
+        stream = real_data_stream(symbols, args.source)
 
     if args.mode == "publisher":
         run_publisher(stream)
+    elif args.mode == "kafka-publisher":
+        run_kafka_publisher(stream)
     else:
         # Chế độ Standalone
         logger.info("Chạy chế độ STANDALONE (Chưa hỗ trợ gộp trong bản update này, vui lòng dùng terminal riêng)")

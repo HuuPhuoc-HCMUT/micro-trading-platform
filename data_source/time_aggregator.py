@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 from models.price_event import PriceEvent

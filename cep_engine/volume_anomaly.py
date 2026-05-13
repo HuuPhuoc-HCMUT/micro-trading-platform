@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import math
 from datetime import datetime, timezone
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 class VolumeAnomalyDetector:
     """Detects abnormal trading volume spikes compared to a rolling average."""
 
-    # Thêm min_volume = 0.5 (Chỉ quan tâm lệnh lớn hơn 0.5 BTC)
+    # Thêm min_volume = 0.5 (ChềEquan tâm lệnh lớn hơn 0.5 BTC)
     def __init__(self, window_size: int = 10, multiplier: float = 3.0, min_volume: float = 0.5) -> None:
         self.window_size = window_size
         self.multiplier = multiplier
@@ -31,19 +33,20 @@ class VolumeAnomalyDetector:
             volume_std = pstdev(previous_volumes) if len(previous_volumes) > 1 else 0.0
             zscore = (event.volume - avg_volume) / volume_std if volume_std > 1e-9 else 0.0
             
-            # LOGIC MỚI: Phải thỏa mãn hệ số nhân VÀ phải lớn hơn min_volume
+            # LOGIC MỚI: Phải thỏa mãn hềEsềEnhân VÀ phải lớn hơn min_volume
             if avg_volume > 0 and event.volume >= (avg_volume * self.multiplier) and event.volume >= self.min_volume:
                 
                 alert = Alert(
                     signal_type="VOLUME_ANOMALY",
                     symbol=symbol,
                     severity="HIGH",
-                    # Đổi %.2f thành %.4f để nhìn rõ số thập phân
+                    # Đổi %.2f thành %.4f đềEnhìn rõ sềEthập phân
                     message=(
                         f"Volume anomaly! Current: {event.volume:.4f} is "
                         f"{event.volume / avg_volume:.1f}x the average ({avg_volume:.4f})"
                     ),
-                    triggered_at=datetime.now(timezone.utc),
+                    triggered_at=event.timestamp,
+                    price=event.price,
                     confidence=min(0.98, 0.5 + min(event.volume / avg_volume, 6.0) / 12.0),
                     score=math.tanh((event.volume / avg_volume) - 1.0),
                     metadata={

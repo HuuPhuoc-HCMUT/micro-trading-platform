@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import math
 from datetime import datetime, timezone
@@ -94,7 +96,8 @@ class MovingAverageDetector:
                     f"Golden cross: SMA({self.short_window})={short_ma:.2f} "
                     f"crossed above SMA({self.long_window})={long_ma:.2f}"
                 ),
-                triggered_at=datetime.now(timezone.utc),
+                triggered_at=event.timestamp,
+                price=event.price,
                 direction="BUY",
                 confidence=confidence,
                 score=math.tanh(abs(spread_ratio) / max(volatility, 0.002)),
@@ -117,7 +120,8 @@ class MovingAverageDetector:
                     f"Death cross: SMA({self.short_window})={short_ma:.2f} "
                     f"crossed below SMA({self.long_window})={long_ma:.2f}"
                 ),
-                triggered_at=datetime.now(timezone.utc),
+                triggered_at=event.timestamp,
+                price=event.price,
                 direction="SELL",
                 confidence=confidence,
                 score=-math.tanh(abs(spread_ratio) / max(volatility, 0.002)),

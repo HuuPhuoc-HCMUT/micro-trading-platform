@@ -1,10 +1,101 @@
 services:
+  # ---------------------------------------------------------------------------
+  # Kafka infrastructure
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: micro_trading_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: micro_trading_kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      # Accessible from the host machine (e.g. when running workers locally)
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # PLAINTEXT_HOST → reachable from the host OS (localhost:9092)
+      # PLAINTEXT       → reachable from other containers (kafka:29092)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Retain messages for 24 hours (good for development replay)
+      KAFKA_LOG_RETENTION_HOURS: 24
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # Kafka UI — browse topics and messages at http://localhost:8080
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: micro_trading_kafka_ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: micro-trading
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Application services
+  # ---------------------------------------------------------------------------
   backend:
     build: .
     container_name: micro_trading_backend
-    ports:
-      - "8000:8000"
+    # Port 8000 is only reachable inside the Docker network.
+    # Access the app through the nginx frontend on http://localhost:80.
+    # Expose 8000 on the host only when running workers locally (Phase 1 / dev).
+    expose:
+      - "8000"
+    env_file: .env          # loads KAFKA_ENV, SOURCE, SYMBOLS, and Aiven creds when production
+    environment:
+      # Development default: local Docker Kafka.
+      # Production: .env must set KAFKA_BOOTSTRAP_SERVERS=<aiven-host:port>
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      KAFKA_ENV: ${KAFKA_ENV:-development}
+      # Cert paths inside the container (only used when KAFKA_ENV=production)
+      KAFKA_SSL_CAFILE: /app/certs/ca.pem
+      KAFKA_SSL_CERTFILE: /app/certs/service.cert
+      KAFKA_SSL_KEYFILE: /app/certs/service.key
+      # replication_factor: 1 for local Docker (1 broker), 2 for Aiven (2 brokers registered)
+      REPLICATION_FACTOR: ${REPLICATION_FACTOR:-1}
+      SOURCE: ${SOURCE:-binance}
+      SYMBOLS: ${SYMBOLS:-BTC/USDT,ETH/USDT,SOL/USDT}
+    volumes:
+      # Mount certs/ into the container (empty dir in dev, real certs in prod)
+      - ./certs:/app/certs:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/state')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
 
   frontend:
     image: nginx:alpine
@@ -13,6 +104,8 @@ services:
       - "80:80"
     volumes:
       - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy

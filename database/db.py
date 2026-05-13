@@ -22,9 +22,15 @@ def init_db():
                 side TEXT,
                 price REAL,
                 quantity REAL,
-                status TEXT
+                status TEXT,
+                trade_pnl REAL
             )
         ''')
+        # Migration: thêm cột trade_pnl nếu chưa có (DB cũ)
+        try:
+            cursor.execute("ALTER TABLE orders ADD COLUMN trade_pnl REAL")
+        except sqlite3.OperationalError:
+            pass  # Cột đã tồn tại
         
         # Bảng Balance (Lưu vết biến động số dư và PnL)
         cursor.execute('''
@@ -39,15 +45,63 @@ def init_db():
         # Bảng Price History (Lưu nến OHLCV)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS price_history (
-                timestamp TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                symbol TEXT DEFAULT '',
                 open REAL,
                 high REAL,
                 low REAL,
                 close REAL,
-                volume REAL
+                volume REAL,
+                ticks_count INTEGER DEFAULT 1
             )
         ''')
-        
+        # Migration: thêm cột symbol và ticks_count nếu chưa có (DB cũ)
+        for col_sql in [
+            "ALTER TABLE price_history ADD COLUMN symbol TEXT DEFAULT ''",
+            "ALTER TABLE price_history ADD COLUMN ticks_count INTEGER DEFAULT 1",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Cột đã tồn tại
+
+        # Bảng Alerts (Lưu tín hiệu CEP)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                triggered_at TEXT,
+                signal_type TEXT,
+                symbol TEXT,
+                severity TEXT,
+                message TEXT,
+                price REAL,
+                direction TEXT,
+                score REAL,
+                confidence REAL
+            )
+        ''')
+        # Migration: thêm các cột mới nếu chưa có (DB cũ)
+        for col_sql in [
+            "ALTER TABLE alerts ADD COLUMN direction TEXT",
+            "ALTER TABLE alerts ADD COLUMN score REAL",
+            "ALTER TABLE alerts ADD COLUMN confidence REAL",
+        ]:
+            try:
+                cursor.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Cột đã tồn tại
+
+        # Bảng Positions (Vị thế đang mở theo thời gian thực)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol     TEXT PRIMARY KEY,
+                quantity   REAL NOT NULL DEFAULT 0.0,
+                avg_entry  REAL NOT NULL DEFAULT 0.0,
+                updated_at TEXT
+            )
+        ''')
+
         conn.commit()
         logger.info("🗄️ Database (SQLite) đã được khởi tạo thành công. Sẵn sàng lưu sổ sách!")
 
@@ -60,9 +114,9 @@ def save_order(order: Order):
         ts = order.timestamp.isoformat() if isinstance(order.timestamp, datetime) else order.timestamp
         
         cursor.execute('''
-            INSERT INTO orders (timestamp, symbol, side, price, quantity, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (ts, order.symbol, order.side, order.price, order.quantity, order.status))
+            INSERT INTO orders (timestamp, symbol, side, price, quantity, status, trade_pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, order.symbol, order.side, order.price, order.quantity, order.status, order.trade_pnl))
         conn.commit()
 
 def save_balance(balance_usdt: float, realized_pnl: float):
@@ -76,7 +130,7 @@ def save_balance(balance_usdt: float, realized_pnl: float):
         conn.commit()
 
 def save_candle(event):
-    """Lưu 1 cây nến vào DB. Dùng REPLACE để lỡ có trùng timestamp thì cập nhật luôn."""
+    """Lưu 1 cây nến vào DB."""
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         ts = event.timestamp.isoformat() if isinstance(event.timestamp, datetime) else event.timestamp
@@ -87,7 +141,38 @@ def save_candle(event):
         low_p = getattr(event, 'low', event.price) or event.price
         
         cursor.execute('''
-            INSERT OR REPLACE INTO price_history (timestamp, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (ts, open_p, high_p, low_p, event.price, event.volume))
+            INSERT INTO price_history (timestamp, symbol, open, high, low, close, volume, ticks_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ts, event.symbol, open_p, high_p, low_p, event.price, event.volume, getattr(event, 'ticks_count', 1)))
+        conn.commit()
+
+def save_position(symbol: str, quantity: float, avg_entry: float) -> None:
+    """Upsert the current open position for a symbol."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO positions (symbol, quantity, avg_entry, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                quantity   = excluded.quantity,
+                avg_entry  = excluded.avg_entry,
+                updated_at = excluded.updated_at
+        ''', (symbol, quantity, avg_entry, datetime.now().isoformat()))
+        conn.commit()
+
+def save_alert(alert) -> None:
+    """Ghi một tín hiệu CEP vào Database."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        ts = alert.triggered_at.isoformat() if isinstance(alert.triggered_at, datetime) else alert.triggered_at
+        cursor.execute('''
+            INSERT INTO alerts (triggered_at, signal_type, symbol, severity, message, price, direction, score, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            ts, alert.signal_type, alert.symbol, alert.severity, alert.message,
+            getattr(alert, 'price', 0.0),
+            getattr(alert, 'direction', None),
+            getattr(alert, 'score', 0.0),
+            getattr(alert, 'confidence', 0.0),
+        ))
         conn.commit()

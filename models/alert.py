@@ -9,6 +9,7 @@ class Alert(BaseModel):
     severity: str
     message: str
     triggered_at: datetime
+    price: float = 0.0
     direction: str | None = None
     confidence: float = 0.0
     score: float = 0.0
